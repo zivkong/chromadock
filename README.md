@@ -69,3 +69,7 @@ In the desktop app, where `/plugin` does not run: click + next to the prompt box
 - `python3` and `git` on your `PATH` (spend totals, session title, branch state).
 
 The spend script keeps its progress in `~/.cache/aurora/month-spend.json` and reads only new transcript lines after its first run.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
