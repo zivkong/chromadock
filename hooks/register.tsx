@@ -281,7 +281,7 @@ async function reconcile($: EngineInterface) {
 
 async function trackAgent($: EngineInterface, id: string, label: string, type: string, modelId: string, runId: string | null) {
   const now = await $.clock.now()
-  live.set(id, { id, label, type, model: modelId, runId, startedAt: now, endedAt: null, status: 'running', tools: 0, lastTool: null })
+  live.set(id, { id, label, type, model: modelId, runId, startedAt: now, endedAt: null, status: 'running', tools: 0, lastTool: null, lastToolAt: null })
 
   if (runId !== null && runId !== '') {
     const run = runs.get(runId) ?? { runId, name: runId.slice(0, 9), startedAt: now, lastSpawnAt: now }
@@ -314,6 +314,7 @@ async function countTool($: EngineInterface, agentId: string | undefined, tool: 
 
   row.tools += 1
   row.lastTool = tool
+  row.lastToolAt = await $.clock.now()
   await publish($)
 }
 
@@ -331,7 +332,7 @@ async function startTurn($: EngineInterface) {
 // A sprite row is runs of text: body-coloured, or a face drawn dark on the body colour.
 type Run = { text: string; isFace?: boolean }
 type Sprite = [Run[], Run[], Run[]]
-type Pose = 'stand' | 'walk' | 'type' | 'cheer' | 'fizzle' | 'conduct'
+type Pose = 'stand' | 'walk' | 'type' | 'doze' | 'cheer' | 'fizzle' | 'conduct'
 
 type Actor = { row: AgentRow; seat: number; fromLeft: boolean; hue: number; goneAt: number | null }
 
@@ -345,6 +346,15 @@ const WALK_COLS_PER_S = 16
 // How long a finished robot cheers or fizzles in its seat before it walks off.
 const CHEER_MS = 1400
 const FACE_INK = '#18181b'
+// A robot with no tool call for this long nods off.
+const DOZE_MS = 30_000
+// How long the conductor's spark takes to fly to a robot that just called a tool.
+const SPARK_MS = 700
+// One glyph per tool for the speech bubbles; anything else gets a dot.
+const TOOL_GLYPH: Record<string, string> = {
+  Bash: '$', Read: '▤', Grep: '⌕', Glob: '⌕', Edit: '✎', Write: '✎', NotebookEdit: '✎',
+  WebFetch: '⇣', WebSearch: '⌕', Agent: '◆', Skill: '★', ToolSearch: '⌕',
+}
 
 // Module state like `live`: a reload clears the stage.
 const cast = new Map<string, Actor>()
@@ -355,6 +365,7 @@ const face = (b: number, pose: Pose): string => {
   if (pose === 'fizzle') return ' ×_× '
   if (pose === 'cheer') return ' ◕▿◕ '
   if (pose === 'type') return ' •ᴗ• '
+  if (pose === 'doze') return ' –ᴗ– '
   // A blink every few seconds.
   return b % 23 === 22 ? ' –ᴗ– ' : ' ◕ᴗ◕ '
 }
@@ -370,6 +381,8 @@ function sprite(pose: Pose, b: number): Sprite {
     case 'type':
       // The laptop's lid faces us; the hands tap at either side of it.
       return [head, body(' ▐', '▌ '), [{ text: b % 2 === 0 ? '▖▕▀▀◦▀▀▏ ' : ' ▕▀▀◦▀▀▏▗' }]]
+    case 'doze':
+      return [head, body(' ▐', '▌ '), [{ text: ' ▕▀▀◦▀▀▏ ' }]]
     case 'cheer':
       return [head, body(' ╲', '╱ '), [{ text: '  ▀▀ ▀▀  ' }]]
     case 'conduct':
@@ -408,10 +421,13 @@ function syncCast(rows: readonly AgentRow[], now: number) {
   }
 }
 
-type Placed = { id: string; x: number; top: number; pose: Pose; hue: number; mark: string; markColor: string }
+type Placed = { id: string; x: number; pose: Pose; hue: number; mark: string; markColor: string; sparkAt: number | null }
+
+// The speech bubble over a typing robot: the tool it called last.
+const bubble = (tool: string | null): string => (tool === null ? '  …' : fit(`${TOOL_GLYPH[tool] ?? '•'} ${tool}`, SPRITE_COLS))
 
 // Where every robot stands now, worked out from the clock; robots that have walked off are dropped.
-function stage(now: number, cols: number): { placed: Placed[]; hidden: number } {
+function stage(now: number, cols: number, b: number): { placed: Placed[]; hidden: number } {
   const seats = Math.max(1, Math.floor((cols - CORNER_COLS) / SEAT_COLS))
   const walked = (ms: number) => (Math.max(0, ms) / 1000) * WALK_COLS_PER_S
   const placed: Placed[] = []
@@ -433,7 +449,7 @@ function stage(now: number, cols: number): { placed: Placed[]; hidden: number } 
         continue
       }
       if (actor.seat >= seats) continue
-      placed.push({ id: actor.row.id, x, top: 1, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED })
+      placed.push({ id: actor.row.id, x, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED, sparkAt: null })
       continue
     }
 
@@ -443,8 +459,9 @@ function stage(now: number, cols: number): { placed: Placed[]; hidden: number } 
     }
 
     if (endedAt !== null) {
-      const mark = isFailed ? '✗' : '✓'
-      placed.push({ id: actor.row.id, x: home, top: 1, pose: isFailed ? 'fizzle' : 'cheer', hue: actor.hue, mark, markColor: isFailed ? BAD : GOOD })
+      // Confetti that twinkles over a cheer; smoke that drifts over a fizzle.
+      const mark = isFailed ? (b % 2 === 0 ? ' ░▒ ✗ ▒░' : '░▒  ✗  ▒') : b % 2 === 0 ? '✦ ✧ ✓ ✧ ✦' : ' ✧ ✦✓✦ ✧'
+      placed.push({ id: actor.row.id, x: home, pose: isFailed ? 'fizzle' : 'cheer', hue: actor.hue, mark, markColor: isFailed ? BAD : GOOD, sparkAt: null })
       continue
     }
 
@@ -453,11 +470,20 @@ function stage(now: number, cols: number): { placed: Placed[]; hidden: number } 
 
     if (travelled < distance) {
       const x = Math.round(actor.fromLeft ? start + travelled : start - travelled)
-      placed.push({ id: actor.row.id, x, top: 1, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED })
+      placed.push({ id: actor.row.id, x, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED, sparkAt: null })
       continue
     }
 
-    placed.push({ id: actor.row.id, x: home, top: 1, pose: 'type', hue: actor.hue, mark: fit(actor.row.label, SPRITE_COLS), markColor: hsl(actor.hue, 0.5, 0.72) })
+    const isDozing = now - (actor.row.lastToolAt ?? actor.row.startedAt) > DOZE_MS
+    placed.push({
+      id: actor.row.id,
+      x: home,
+      pose: isDozing ? 'doze' : 'type',
+      hue: actor.hue,
+      mark: isDozing ? (b % 4 < 2 ? '      zᶻ' : '     zᶻ ᶻ') : bubble(actor.row.lastTool),
+      markColor: isDozing ? MUTED : hsl(actor.hue, 0.5, 0.78),
+      sparkAt: actor.row.lastToolAt,
+    })
   }
 
   return { placed, hidden }
@@ -576,6 +602,7 @@ export const register: Register = on => {
   })
 
   // ── the band above the prompt: open while any robot is on stage ──
+  // The board (each run's progress), the stage (the robots), then the roster (every agent in full).
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const b = await read($, beat)
     const agentRows = await read($, agents)
@@ -586,9 +613,13 @@ export const register: Register = on => {
 
     const { Box, Text } = $.ui.resolve(e)
     const W = Math.max(CORNER_COLS + SEAT_COLS, e.props.bodyColumns)
-    const { placed, hidden } = stage(now, W)
+    const { placed, hidden } = stage(now, W, b)
     const isRunning = agentRows.some(a => a.status === 'running')
     const drift = b * 9
+    const conductorHue = 330 + drift
+    // The conductor waves while anyone types, and hops once the last has finished.
+    const isHopping = !isRunning && b % 4 < 2
+    const spinner = SPINNER[b % SPINNER.length] ?? '◜'
 
     const draw = (s: Sprite, hue: number, color: string, key: string) =>
       s.map((runs, r) => (
@@ -601,35 +632,128 @@ export const register: Register = on => {
         </Text>
       ))
 
-    // The board: each workflow's name and count, then any loose agents.
-    const loose = agentRows.filter(a => a.runId === null && a.status === 'running').length
-    const boards = flowRows.map(run => {
-      const members = agentRows.filter(a => a.runId === run.runId)
-      const settled = members.filter(a => a.status !== 'running').length
+    // A segmented bar; `pct` null draws a shimmer for work with no estimate yet.
+    const meter = (pct: number | null, cells: number, hue: (i: number) => number, key: string) =>
+      Array.from({ length: cells }, (_, i) => {
+        if (pct === null) {
+          const lit = Math.abs((b % (cells * 2)) - cells) === i
 
-      return `${run.name} ${settled}/${members.length} · ${clock(now - run.startedAt)}`
+          return <Text key={`${key}${i}`} color={lit ? hsl(hue(i)) : TRACK}>{lit ? '▰' : '▱'}</Text>
+        }
+        const isOn = i < Math.round((Math.min(100, Math.max(0, pct)) / 100) * cells)
+
+        return <Text key={`${key}${i}`} color={isOn ? hsl(hue(i)) : TRACK}>{isOn ? '▰' : '▱'}</Text>
+      })
+
+    // ── the board: one line per workflow, one for loose agents ──
+    const groups = [
+      ...flowRows.map(run => ({ key: run.runId, name: run.name, startedAt: run.startedAt, members: agentRows.filter(a => a.runId === run.runId) })),
+      ...(agentRows.some(a => a.runId === null)
+        ? [{ key: 'loose', name: 'agents', startedAt: Math.min(...agentRows.filter(a => a.runId === null).map(a => a.startedAt)), members: agentRows.filter(a => a.runId === null) }]
+        : []),
+    ]
+    const BOARD_BAR = Math.max(6, Math.min(16, Math.floor(W / 6)))
+    const boardLines = groups.map(g => {
+      const done = g.members.filter(a => a.status === 'done').length
+      const failed = g.members.filter(a => a.status === 'failed').length
+      const running = g.members.length - done - failed
+      const tail = `  ${clock(now - g.startedAt)}`
+      const counts = `  ✓${done} ⟳${running} ✗${failed}`
+
+      return (
+        <Text key={`board-${g.key}`} wrap="truncate-end">
+          <Text color={hsl(conductorHue, 0.85, 0.7)} bold>{'▍ '}</Text>
+          <Text color={running > 0 ? hsl(215 + drift) : GOOD}>{running > 0 ? `${spinner} ` : '✓ '}</Text>
+          <Text color={BRIGHT} bold>{fit(g.name, Math.max(8, W - BOARD_BAR - counts.length - tail.length - 8))}</Text>
+          <Text>{'  '}</Text>
+          {meter(g.members.length === 0 ? 0 : ((done + failed) / g.members.length) * 100, BOARD_BAR, i => (i / BOARD_BAR) * 300 + drift, `bb-${g.key}`)}
+          <Text color={MUTED}>{'  ✓'}</Text>
+          <Text color={GOOD}>{`${done}`}</Text>
+          <Text color={hsl(215)}>{` ⟳${running}`}</Text>
+          <Text color={failed > 0 ? BAD : MUTED}>{` ✗${failed}`}</Text>
+          <Text color={MUTED}>{tail}</Text>
+        </Text>
+      )
     })
-    const board = [...boards, ...(loose > 0 ? [`${loose} agent${loose === 1 ? '' : 's'}`] : [])].join('   ')
-    const spinner = SPINNER[b % SPINNER.length] ?? '◜'
 
-    // The conductor waves while anyone types, and hops once the last has finished.
-    const conductorHue = 330 + drift
-    const isHopping = !isRunning && b % 4 < 2
+    // ── sparks: the conductor's baton throws one at each robot that just called a tool ──
+    const sparks = placed.flatMap(p => {
+      const age = p.sparkAt === null ? Infinity : now - p.sparkAt
+
+      if (age > SPARK_MS) return []
+      const from = 10
+      const to = p.x + 4
+      const x = Math.round(from + (to - from) * (age / SPARK_MS))
+
+      return [
+        <Box key={`spark-${p.id}`} position="absolute" left={x} top={1}>
+          <Text color={hsl(p.hue + drift, 0.9, 0.8)} bold>{b % 2 === 0 ? '✦' : '✧'}</Text>
+        </Box>,
+      ]
+    })
+
+    // ── the roster: every agent's task in full, with an estimated progress bar ──
+    const ROSTER_BAR = 7
+    const RIGHT = Math.min(44, Math.floor(W / 2))
+    const LEFT = W - RIGHT - 1
+    const room = Math.max(1, e.props.maxRows - boardLines.length - STAGE_ROWS - 1)
+    // An agent's bar compares its time with the mean of its finished peers.
+    const meanOf = (members: readonly AgentRow[]): number | null => {
+      const spans = members.filter(a => a.endedAt !== null && a.status === 'done').map(a => (a.endedAt ?? 0) - a.startedAt)
+
+      return spans.length === 0 ? null : spans.reduce((x, y) => x + y, 0) / spans.length
+    }
+    const ordered = [...agentRows].sort((x, y) => x.startedAt - y.startedAt)
+    let used = 0
+    let folded = 0
+    const roster = ordered.flatMap(a => {
+      // A long task wraps; count its lines against the room the band has.
+      const lines = Math.max(1, Math.ceil((a.label.length + 2) / Math.max(10, LEFT)))
+
+      if (used + lines > room) {
+        folded += 1
+
+        return []
+      }
+      used += lines
+      const hue = cast.get(a.id)?.hue ?? 250
+      const mean = meanOf(agentRows.filter(m => m.runId === a.runId))
+      const elapsed = (a.endedAt ?? now) - a.startedAt
+      const pct = a.status !== 'running' ? 100 : mean === null ? null : Math.min(95, (elapsed / mean) * 100)
+      const isOver = a.status !== 'running'
+      const dot = a.status === 'done' ? '✓' : a.status === 'failed' ? '✗' : '●'
+      const dotColor = a.status === 'done' ? GOOD : a.status === 'failed' ? BAD : hsl(hue, 0.7, 0.74)
+      const stats = `${familyOf(a.model)} ${clock(elapsed)} · ${a.tools} tool${a.tools === 1 ? '' : 's'}${a.lastTool === null || isOver ? '' : ` · ${a.lastTool}`}`
+
+      return [
+        <Box key={`ro-${a.id}`} flexDirection="row" width={W}>
+          <Box width={LEFT}>
+            <Text wrap="wrap">
+              <Text color={dotColor}>{dot} </Text>
+              <Text color={isOver ? MUTED : TEXT}>{a.label}</Text>
+            </Text>
+          </Box>
+          <Box width={RIGHT + 1} justifyContent="flex-end">
+            <Text wrap="truncate-start">
+              {meter(pct, ROSTER_BAR, () => (a.status === 'failed' ? 0 : hue), `rb-${a.id}`)}
+              <Text color={isOver ? MUTED : hsl(hue, 0.5, 0.8)}>{` ${stats}`}</Text>
+            </Text>
+          </Box>
+        </Box>,
+      ]
+    })
 
     return (
       <Box flexDirection="column" width={W}>
-        <Text wrap="truncate-end">
-          <Text color={hsl(conductorHue, 0.85, 0.7)} bold>{'▍ '}</Text>
-          <Text color={isRunning ? hsl(215 + drift) : GOOD}>{isRunning ? `${spinner} ` : '✓ '}</Text>
-          <Text color={TEXT}>{fit(board === '' ? 'wrapping up' : board, W - 6)}</Text>
-        </Text>
+        {boardLines.length > 0 ? boardLines : <Text color={GOOD}>{'▍ ✓ wrapping up'}</Text>}
         <Box height={STAGE_ROWS} width={W}>
           <Box key="conductor" position="absolute" left={1} top={isHopping ? 0 : 1} flexDirection="column">
             {draw(sprite(isRunning ? 'conduct' : 'cheer', b), conductorHue, hsl(conductorHue), 'c')}
           </Box>
+          {sparks}
           {placed.map(p => (
             <Box key={`bot-${p.id}`} position="absolute" left={p.x} top={0} flexDirection="column">
-              <Text color={p.markColor} wrap="truncate-end">{p.mark === '' ? ' ' : p.mark.length === 1 ? `    ${p.mark}` : p.mark}</Text>
+              <Text color={p.markColor} wrap="truncate-end">{p.mark === '' ? ' ' : p.mark}</Text>
               {draw(sprite(p.pose, b), p.hue, hsl(p.hue), `b${p.id}`)}
             </Box>
           ))}
@@ -639,6 +763,8 @@ export const register: Register = on => {
             </Box>
           )}
         </Box>
+        {roster}
+        {folded > 0 && <Text color={MUTED}>{`  +${folded} more`}</Text>}
       </Box>
     )
   })

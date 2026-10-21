@@ -45,7 +45,7 @@ This month's spend **by model**, ranked, plus the open session, summed into a ru
 
 ### ▍ &nbsp;Robots
 
-Workflows and subagents live **above the prompt**, not in the sidebar. At rest the main robot strolls along the hint line under the prompt and takes no rows. Once an agent is spawned a band opens: the main robot conducts from its corner beside a board of each workflow's count and time, and every agent is a chubby robot that walks in from an edge, sits down and types, then cheers ✓ or fizzles ✗ and walks off. The band closes when the last one has left; ctrl+x ctrl+a collapses it sooner.
+Workflows and subagents live **above the prompt**, not in the sidebar. At rest the main robot strolls along the hint line under the prompt and takes no rows. Once an agent is spawned a band opens: the main robot conducts from its corner beside a board of each workflow's count and time, and every agent is a chubby robot that walks in from an edge, sits down and types, then cheers ✓ or fizzles ✗ and walks off. A speech bubble over each robot names the tool it is using, the conductor throws a spark at every new tool call, and a robot idle for 30 s nods off (zᶻ). Under the stage a roster lists every agent's task in full with an estimated progress bar (its time against its finished peers' average; a shimmer until one finishes), model, time and tool count. The band closes when the last one has left; ctrl+x ctrl+a collapses it sooner.
 
 </td>
   </tr>

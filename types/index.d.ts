@@ -28,6 +28,7 @@ export type AgentRow = {
   status: AgentStatus
   tools: number
   lastTool: string | null
+  lastToolAt: number | null
 }
 
 export type FlowRow = { runId: string; name: string; startedAt: number; lastSpawnAt: number }
