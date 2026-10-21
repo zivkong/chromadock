@@ -329,29 +329,38 @@ async function startTurn($: EngineInterface) {
 }
 
 // ── robots ────────────────────────────────────────────────────────────────
-// The sidebar's office, drawn from above on a navy floor: a grid of desks, plants down
-// the left wall and a break area on the right. The main robot keeps the first desk: it
-// works there while Claude does, and at rest wanders to the coffee, the water and the
-// team. Each agent walks in, takes a desk and works, its status the tool it called last;
-// done, it heads for the break area until its run closes, then leaves.
+// The sidebar's office, drawn from above: a wall of windows, a carpet of desks, plants
+// down the left wall and a break area on its own carpet at the right. The main robot keeps
+// the first desk: it works there while Claude does, and at rest wanders to the coffee, the
+// water and the team. Each agent walks in along the aisles, takes a desk and lights its
+// monitor, labelled with the tool it called last; done, it heads for the break area until
+// its run closes, then leaves. Every glyph in the room is one cell wide, and every row is
+// cut to the room's width, so nothing can wrap and shift the rows below.
 
 type Pose = 'walk' | 'work' | 'doze' | 'idle' | 'cheer' | 'fizzle'
 type Point = { x: number; y: number }
 type Actor = { row: AgentRow; seat: number; fromLeft: boolean; hue: number; goneAt: number | null; leftAt: number | null }
 type Cell = { ch: string; fg: string; bg: string; bold: boolean }
-type Figure = { key: string; at: Point; pose: Pose; hue: number; status: string; name: string; statusColor: string }
+type Figure = { key: string; at: Point; pose: Pose; hue: number; status: string; name: string; tone: 'work' | 'good' | 'bad' | 'quiet' }
 
 const FACE_INK = '#18181b'
+// The room: a wall, the office carpet with its faint grid, the break area's own carpet.
+const WALL = '#0c1124'
+const WINDOW = '#24324f'
 const FLOOR = '#141a33'
-const FLOOR_DOT = '#283158'
-const DESK_TOP = '#a1a1aa'
-const MONITOR_OFF = '#3f3f46'
-const CHAIR = '#52525b'
-const LABEL_INK = '#93c5fd'
+const FLOOR_DOT = '#262f57'
+const LOUNGE = '#191f3d'
+const LOUNGE_EDGE = '#2c3666'
+const DESK_TOP = '#b4b4bc'
+const SCREEN_OFF = '#26262c'
+const CHAIR = '#4b4b55'
 const PLACARD = '#6b7280'
+// Status pills: ink on a slightly raised ground, by tone.
+const PILL = '#1f2a52'
+const PILL_INK = { work: '#a5c8ff', good: '#86efac', bad: '#fca5a5', quiet: '#8b8b94' } as const
 
-// A desk station: monitor, desktop, the robot's two rows (a chair when empty), status, name,
-// then an aisle. The 7-column desk sits centred in its station's width.
+// A desk station: monitor, desktop, the robot's two rows (a chair when empty), its status
+// and name, then an aisle. The 7-column desk sits centred in its station's width.
 const DESK_COLS = 13
 const DESK_ROWS = 6
 const AISLE_ROWS = 2
@@ -359,10 +368,11 @@ const PITCH = DESK_ROWS + AISLE_ROWS
 const INSET = Math.floor((DESK_COLS - 7) / 2)
 const DESKS_DOWN = 3
 const MAX_ACROSS = 4
-// The plants' wall at the left; the break area takes what is right of the desks.
+// The wall row on top, the plants' strip at the left, the break area right of the desks.
+const TOP = 1
 const WALL_COLS = 4
 const BREAK_COLS = 9
-const ROOM_ROWS = 1 + DESKS_DOWN * PITCH
+const ROOM_ROWS = TOP + DESKS_DOWN * PITCH
 const WALK_COLS_PER_S = 8
 // How long a finished robot celebrates at its desk, then lingers at the break area once its run has closed.
 const CHEER_MS = 1400
@@ -373,10 +383,10 @@ const DOZE_MS = 30_000
 const WANDER_MS = 9000
 // Agents listed on the roster before the rest fold into "+n more".
 const ROSTER_AGENTS = 12
-// One glyph per tool for the status labels; anything else gets a dot.
+// One glyph per tool for the status pills; anything else gets a dot.
 const TOOL_GLYPH: Record<string, string> = {
   Bash: '$', Read: '▤', Grep: '⌕', Glob: '⌕', Edit: '✎', Write: '✎', NotebookEdit: '✎',
-  WebFetch: '⇣', WebSearch: '⌕', Agent: '◆', Skill: '★', ToolSearch: '⌕',
+  WebFetch: '⇣', WebSearch: '⌕', Agent: '◆', Skill: '✧', ToolSearch: '⌕',
 }
 
 // Module state like `live`: a reload clears the office.
@@ -424,7 +434,7 @@ const planFor = (cols: number): Plan => {
 
 const deskOrigin = (seat: number, plan: Plan): Point => ({
   x: WALL_COLS + (seat % plan.across) * DESK_COLS,
-  y: 1 + Math.floor(seat / plan.across) * PITCH,
+  y: TOP + Math.floor(seat / plan.across) * PITCH,
 })
 
 // Where a robot sits: on the chair, below its desk.
@@ -435,36 +445,59 @@ const chairOf = (seat: number, plan: Plan): Point => {
 }
 
 // Each break-area fixture stands in its own band, level with a row of desks.
-const bandTop = (k: number): number => 1 + k * PITCH
+const bandTop = (k: number): number => TOP + k * PITCH
+
+// The aisle under a row of desks, where robots walk.
+const aisleNear = (y: number): number => {
+  const k = Math.max(0, Math.min(DESKS_DOWN - 1, Math.round((y - TOP - DESK_ROWS) / PITCH)))
+
+  return TOP + k * PITCH + DESK_ROWS
+}
 
 const spots = (plan: Plan): { at: Point; says: string }[] => [
   { at: { x: deskOrigin(0, plan).x + DESK_COLS - 2, y: chairOf(0, plan).y }, says: '◌ Chatting' },
-  { at: { x: plan.breakX, y: bandTop(0) + 2 }, says: '☕ Coffee' },
-  { at: { x: plan.breakX, y: bandTop(1) + 2 }, says: '◍ Water' },
-  { at: { x: plan.breakX, y: bandTop(2) + 2 }, says: '● Snacks' },
+  { at: { x: plan.breakX + 1, y: bandTop(0) + 4 }, says: '◡ Coffee' },
+  { at: { x: plan.breakX + 1, y: bandTop(1) + 4 }, says: '◍ Water' },
+  { at: { x: plan.breakX + 1, y: bandTop(2) + 4 }, says: '● Snacks' },
   { at: chairOf(0, plan), says: '▤ Reading' },
 ]
 
-// Where a finished robot waits out its run: two to a band, below the fixtures.
-const breakSlot = (seat: number, plan: Plan): Point => {
-  const k = seat % (DESKS_DOWN * 2)
+// Where a finished robot waits out its run: one to a band, beside the fixture.
+const breakSlot = (seat: number, plan: Plan): Point => ({ x: plan.breakX + 1, y: bandTop(seat % DESKS_DOWN) + 1 })
 
-  return { x: plan.breakX + (k % 2 === 0 ? 0 : 5), y: bandTop(Math.floor(k / 2)) + 5 }
+// Out to the nearest aisle, along it, then in: robots never walk through a desk.
+const route = (from: Point, to: Point): Point[] => {
+  if (from.y === to.y && Math.abs(from.x - to.x) <= 3) return [from, to]
+  const aisle = aisleNear(from.y)
+
+  return [from, { x: from.x, y: aisle }, { x: to.x, y: aisle }, to]
 }
 
-// Along x first, then y, at walking pace; `arrived` once there.
-function walk(from: Point, to: Point, startedAt: number, now: number): { at: Point; arrived: boolean } {
-  const steps = (Math.max(0, now - startedAt) / 1000) * WALK_COLS_PER_S
-  const dx = to.x - from.x
-  const dy = to.y - from.y
+const pathMs = (path: readonly Point[]): number =>
+  (path.slice(1).reduce((sum, p, i) => sum + Math.abs(p.x - (path[i]?.x ?? p.x)) + Math.abs(p.y - (path[i]?.y ?? p.y)), 0) / WALK_COLS_PER_S) * 1000
 
-  if (steps >= Math.abs(dx) + Math.abs(dy)) return { at: to, arrived: true }
-  if (steps < Math.abs(dx)) return { at: { x: Math.round(from.x + Math.sign(dx) * steps), y: from.y }, arrived: false }
+// Where along `path` a robot that set off at `startedAt` stands now; `arrived` once at its end.
+function walk(path: readonly Point[], startedAt: number, now: number): { at: Point; arrived: boolean } {
+  let steps = (Math.max(0, now - startedAt) / 1000) * WALK_COLS_PER_S
 
-  return { at: { x: to.x, y: Math.round(from.y + Math.sign(dy) * (steps - Math.abs(dx))) }, arrived: false }
+  for (let i = 1; i < path.length; i += 1) {
+    const from = path[i - 1]
+    const to = path[i]
+
+    if (from === undefined || to === undefined) break
+    const length = Math.abs(to.x - from.x) + Math.abs(to.y - from.y)
+
+    if (steps < length) {
+      const dx = Math.sign(to.x - from.x)
+      const dy = Math.sign(to.y - from.y)
+
+      return { at: { x: Math.round(from.x + dx * steps), y: Math.round(from.y + dy * steps) }, arrived: false }
+    }
+    steps -= length
+  }
+
+  return { at: path[path.length - 1] ?? { x: 0, y: 0 }, arrived: true }
 }
-
-const travelMs = (from: Point, to: Point): number => ((Math.abs(to.x - from.x) + Math.abs(to.y - from.y)) / WALK_COLS_PER_S) * 1000
 
 // Every agent's robot where it stands now; robots that have walked out are dropped.
 function workers(now: number, cols: number): { figures: Figure[]; hidden: number } {
@@ -476,7 +509,7 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
   for (const actor of cast.values()) {
     const { row, seat, hue } = actor
     const chair = chairOf(seat, plan)
-    const name = row.label
+    const base = { key: row.id, hue, name: row.label }
     const endedAt = row.endedAt ?? actor.goneAt
     const isFailed = row.status === 'failed'
 
@@ -487,51 +520,46 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
     }
 
     if (endedAt === null) {
-      const door: Point = { x: actor.fromLeft ? -3 : cols, y: chair.y }
-      const going = walk(door, chair, row.startedAt, now)
+      const door: Point = { x: actor.fromLeft ? -3 : cols, y: aisleNear(chair.y) }
+      const going = walk([door, { x: chair.x, y: door.y }, chair], row.startedAt, now)
 
       if (!going.arrived) {
-        figures.push({ key: row.id, at: going.at, pose: 'walk', hue, status: '→ Arriving', name, statusColor: LABEL_INK })
+        figures.push({ ...base, at: going.at, pose: 'walk', status: '', tone: 'work' })
         continue
       }
 
       const isDozing = now - (row.lastToolAt ?? row.startedAt) > DOZE_MS
       const tool = row.lastTool === null ? '… Starting' : `${TOOL_GLYPH[row.lastTool] ?? '•'} ${row.lastTool}`
-      figures.push({ key: row.id, at: chair, pose: isDozing ? 'doze' : 'work', hue, status: isDozing ? 'zᶻ Dozing' : tool, name, statusColor: isDozing ? MUTED : LABEL_INK })
+      figures.push({ ...base, at: chair, pose: isDozing ? 'doze' : 'work', status: isDozing ? 'z Dozing' : tool, tone: isDozing ? 'quiet' : 'work' })
       continue
     }
 
     // Done: celebrate at the desk, take a break, and leave once the run has closed.
     if (now - endedAt < CHEER_MS) {
-      figures.push({ key: row.id, at: chair, pose: isFailed ? 'fizzle' : 'cheer', hue, status: isFailed ? '✗ Crashed' : '✓ Done!', name, statusColor: isFailed ? BAD : GOOD })
+      figures.push({ ...base, at: chair, pose: isFailed ? 'fizzle' : 'cheer', status: isFailed ? '✗ Crashed' : '✓ Done!', tone: isFailed ? 'bad' : 'good' })
       continue
     }
 
     const slot = breakSlot(seat, plan)
-    const toBreak = walk(chair, slot, endedAt + CHEER_MS, now)
-    const arrivedAt = endedAt + CHEER_MS + travelMs(chair, slot)
+    const toBreak = route(chair, slot)
+    const going = walk(toBreak, endedAt + CHEER_MS, now)
+    const arrivedAt = endedAt + CHEER_MS + pathMs(toBreak)
     const leavesAt = actor.leftAt === null ? null : Math.max(actor.leftAt, arrivedAt + LINGER_MS)
 
     if (leavesAt !== null && now >= leavesAt) {
-      const exit = { x: cols, y: slot.y }
-      const out = walk(slot, exit, leavesAt, now)
+      const out = walk(route(slot, { x: cols, y: aisleNear(slot.y) }), leavesAt, now)
 
-      if (out.arrived) {
-        cast.delete(row.id)
-        continue
-      }
-      figures.push({ key: row.id, at: out.at, pose: 'walk', hue, status: '← Heading out', name, statusColor: MUTED })
+      if (out.arrived) cast.delete(row.id)
+      else figures.push({ ...base, at: out.at, pose: 'walk', status: '', tone: 'quiet' })
       continue
     }
 
     figures.push({
-      key: row.id,
-      at: toBreak.at,
-      pose: toBreak.arrived ? 'idle' : 'walk',
-      hue,
-      status: isFailed ? '✗ Crashed' : toBreak.arrived ? 'On break ✓' : '☕ Break time',
-      name,
-      statusColor: isFailed ? BAD : toBreak.arrived ? GOOD : LABEL_INK,
+      ...base,
+      at: going.at,
+      pose: going.arrived ? 'idle' : 'walk',
+      status: going.arrived ? (isFailed ? '✗ Crashed' : '✓ On break') : '',
+      tone: isFailed ? 'bad' : 'good',
     })
   }
 
@@ -541,31 +569,25 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
 // The main robot: at its desk while Claude works or leads agents, wandering at rest.
 function mainRobot(now: number, cols: number, isBusy: boolean, leading: number): Figure {
   const plan = planFor(cols)
-  const base = { key: 'main', hue: 330, name: 'Claude', statusColor: LABEL_INK }
+  const base = { key: 'main', hue: 330, name: 'Claude', tone: 'work' as const }
 
   if (isBusy || leading > 0) {
     return { ...base, at: chairOf(0, plan), pose: 'work', status: leading > 0 ? `☰ Leading ${leading}` : '✎ Working' }
   }
 
-  const route = spots(plan)
+  const stops = spots(plan)
   const k = Math.floor(now / WANDER_MS)
-  const here = route[k % route.length] ?? route[0]
-  const before = route[(k + route.length - 1) % route.length] ?? route[0]
+  const here = stops[k % stops.length]
+  const before = stops[(k + stops.length - 1) % stops.length]
 
-  if (here === undefined || before === undefined) return { ...base, at: chairOf(0, plan), pose: 'idle', status: '☕ Resting' }
+  if (here === undefined || before === undefined) return { ...base, at: chairOf(0, plan), pose: 'idle', status: '◡ Resting' }
 
-  const going = walk(before.at, here.at, k * WANDER_MS, now)
+  const going = walk(route(before.at, here.at), k * WANDER_MS, now)
 
-  return { ...base, at: going.at, pose: going.arrived ? 'idle' : 'walk', status: here.says }
+  return { ...base, at: going.at, pose: going.arrived ? 'idle' : 'walk', status: going.arrived ? here.says : '', tone: 'quiet' }
 }
 
 // ── drawing on a grid of cells ──
-
-function floorOf(cols: number, rows: number): Cell[][] {
-  return Array.from({ length: rows }, (_, y) =>
-    Array.from({ length: cols }, (_, x) => ({ ch: x % 4 === 1 && y % 2 === 0 ? '·' : ' ', fg: FLOOR_DOT, bg: FLOOR, bold: false })),
-  )
-}
 
 function paint(grid: Cell[][], at: Point, text: string, fg: string, bg?: string, bold = false) {
   ;[...text].forEach((ch, i) => {
@@ -579,14 +601,37 @@ function paint(grid: Cell[][], at: Point, text: string, fg: string, bg?: string,
   })
 }
 
-// Centred under a robot, a column narrower than a desk so neighbours' labels never touch.
-function label(grid: Cell[][], at: Point, text: string, fg: string, bold = false) {
-  const words = fit(text, DESK_COLS - 1)
-  paint(grid, { x: at.x + 1 - Math.floor(words.length / 2), y: at.y }, words, fg, undefined, bold)
+// The wall with its windows, the office carpet with a faint grid, the lounge carpet.
+function floorOf(cols: number, plan: Plan): Cell[][] {
+  const grid = Array.from({ length: ROOM_ROWS }, (_, y) =>
+    Array.from({ length: cols }, (_, x) => {
+      if (y < TOP) return { ch: ' ', fg: WINDOW, bg: WALL, bold: false }
+      const isLounge = x >= plan.breakX
+
+      return { ch: !isLounge && x % 4 === 2 && y % 2 === 0 ? '·' : ' ', fg: FLOOR_DOT, bg: isLounge ? LOUNGE : FLOOR, bold: false }
+    }),
+  )
+
+  for (let x = 2; x + 5 < plan.breakX; x += 9) paint(grid, { x, y: 0 }, '▁▁▁▁▁', WINDOW)
+  for (let y = TOP; y < ROOM_ROWS; y += 1) paint(grid, { x: plan.breakX, y }, '┊', LOUNGE_EDGE)
+
+  return grid
 }
 
+// A label centred under a robot, a column narrower than a desk so neighbours' never touch;
+// in the lounge, where the room ends close by, it starts at the robot and runs to the wall.
+// A pill is padded with a space each side when that still fits.
+function caption(grid: Cell[][], at: Point, text: string, fg: string, bg?: string, bold = false, isPill = false) {
+  const row = grid[at.y]
+  const inLounge = row !== undefined && row[at.x]?.bg === LOUNGE
+  const room = inLounge ? Math.max(1, (row?.length ?? 0) - at.x) : DESK_COLS - 1
+  const words = fit(isPill && [...text].length + 2 <= room ? ` ${text} ` : text, room)
+  paint(grid, { x: inLounge ? at.x : at.x + 1 - Math.floor([...words].length / 2), y: at.y }, words, fg, bg, bold)
+}
+
+
 const faceOf = (pose: Pose, b: number): string => {
-  if (pose === 'work') return '•ᴗ•'
+  if (pose === 'work') return b % 9 === 0 ? '•‿•' : '•ᴗ•'
   if (pose === 'doze') return '–ᴗ–'
   if (pose === 'cheer') return '◕▿◕'
   if (pose === 'fizzle') return '×_×'
@@ -595,13 +640,28 @@ const faceOf = (pose: Pose, b: number): string => {
 }
 
 // A chubby robot seen from above: the crown of its head, then its face; it bobs as it walks.
+// Seated or standing it wears its status as a pill and its name beneath; walking it wears neither.
 function robot(grid: Cell[][], f: Figure, b: number) {
   const body = hsl(f.hue, 0.7, 0.72)
   paint(grid, f.at, f.pose === 'walk' && b % 2 === 1 ? '▗▄▖' : '▄▄▄', body)
   paint(grid, { x: f.at.x, y: f.at.y + 1 }, faceOf(f.pose, b), FACE_INK, body)
-  label(grid, { x: f.at.x, y: f.at.y + 2 }, f.status, f.statusColor)
-  label(grid, { x: f.at.x, y: f.at.y + 3 }, f.name, BRIGHT, true)
+
+  if (f.pose === 'doze') paint(grid, { x: f.at.x + 3, y: f.at.y - (b % 6 < 3 ? 0 : 1) }, b % 2 === 0 ? 'z' : 'ᶻ', PILL_INK.quiet)
+  if (f.pose === 'cheer') paint(grid, { x: f.at.x - 1, y: f.at.y }, b % 2 === 0 ? '✦' : '✧', hsl(f.hue + b * 40, 0.9, 0.8))
+  if (f.pose === 'walk' || f.status === '') return
+
+  // A finished robot on its break wears just its mark, beside its head.
+  if (f.pose === 'idle' && f.key !== 'main') {
+    paint(grid, { x: f.at.x + 3, y: f.at.y + 1 }, f.status.slice(0, 1), PILL_INK[f.tone], undefined, true)
+
+    return
+  }
+  caption(grid, { x: f.at.x, y: f.at.y + 2 }, f.status, PILL_INK[f.tone], PILL, false, true)
+  caption(grid, { x: f.at.x, y: f.at.y + 3 }, f.name, f.key === 'main' ? hsl(330, 0.7, 0.8) : BRIGHT, undefined, true)
 }
+
+// A monitor scrolls code while its worker types, and sits dark otherwise.
+const SCREEN_LINES = ['▁▃▂▅▁', '▃▁▅▂▃', '▂▅▁▃▂', '▅▂▃▁▅']
 
 function furnish(grid: Cell[][], cols: number, b: number, lit: Map<number, number>) {
   const plan = planFor(cols)
@@ -609,36 +669,36 @@ function furnish(grid: Cell[][], cols: number, b: number, lit: Map<number, numbe
   for (let seat = 0; seat < plan.across * DESKS_DOWN; seat += 1) {
     const o = deskOrigin(seat, plan)
     const hue = lit.get(seat)
-    // A lit monitor flickers in its worker's colour.
-    paint(grid, { x: o.x + INSET + 1, y: o.y }, hue === undefined ? '▄▄▄▄▄' : b % 3 === 0 ? '▄▄▀▄▄' : '▄▄▄▄▄', hue === undefined ? MONITOR_OFF : hsl(hue, 0.8, 0.7))
+    const screen = hue === undefined ? '     ' : (SCREEN_LINES[(b + seat) % SCREEN_LINES.length] ?? '     ')
+    paint(grid, { x: o.x + INSET + 1, y: o.y }, screen, hue === undefined ? SCREEN_OFF : hsl(hue, 0.8, 0.78), hue === undefined ? SCREEN_OFF : hsl(hue, 0.45, 0.24))
     paint(grid, { x: o.x + INSET, y: o.y + 1 }, '▐█████▌', DESK_TOP)
     paint(grid, { x: o.x + INSET + 2, y: o.y + 2 }, '▗▄▖', CHAIR)
   }
+  // Claude's mug, on the corner of the first desk.
+  paint(grid, { x: deskOrigin(0, plan).x + INSET + 6, y: deskOrigin(0, plan).y }, '◡', hsl(25, 0.7, 0.7))
 
-  // Potted plants down the left wall.
+  // Potted plants down the left wall, swaying a little.
   for (let k = 0; k < DESKS_DOWN; k += 1) {
-    paint(grid, { x: 1, y: bandTop(k) + 1 }, '▟▙', hsl(135, 0.55, 0.5))
+    paint(grid, { x: 1, y: bandTop(k) + 1 }, (b + k * 5) % 16 < 8 ? '▟▙' : '▙▟', hsl(135, 0.55, 0.5))
     paint(grid, { x: 1, y: bandTop(k) + 2 }, '▀▀', hsl(25, 0.6, 0.45))
   }
 
-  // The break area: coffee machine, water cooler, snack tray, one to a band.
+  // The break area: coffee with its steam, the water cooler's rising bubble, the snack tray.
   const x = plan.breakX
-  if (x + 9 > cols) return
+  if (x + BREAK_COLS > cols) return
   const [coffee, water, snacks] = [bandTop(0), bandTop(1), bandTop(2)]
-  paint(grid, { x: x + 3, y: 0 }, 'break', PLACARD)
+  paint(grid, { x: x + 3, y: 0 }, 'break', PLACARD, WALL)
+  paint(grid, { x: x + 4 + (b % 4 < 2 ? 0 : 1), y: coffee }, b % 2 === 0 ? '∿' : '~', '#9ca3af')
   paint(grid, { x: x + 4, y: coffee + 1 }, '▄▄▄', '#71717a')
   paint(grid, { x: x + 4, y: coffee + 2 }, '█', '#71717a')
-  paint(grid, { x: x + 5, y: coffee + 2 }, b % 8 < 4 ? '•' : '∘', '#f87171')
+  paint(grid, { x: x + 5, y: coffee + 2 }, b % 8 < 4 ? '•' : '∘', '#f87171', '#3f3f46')
   paint(grid, { x: x + 6, y: coffee + 2 }, '█', '#71717a')
   paint(grid, { x: x + 4, y: coffee + 3 }, '▀▀▀', '#71717a')
-  paint(grid, { x: x + 3, y: coffee + 4 }, 'coffee', PLACARD)
-  paint(grid, { x: x + 5, y: water + 1 }, '▄', '#93c5fd')
-  paint(grid, { x: x + 4, y: water + 2 }, '▐█▌', '#60a5fa')
+  paint(grid, { x: x + 4, y: water + 1 }, ' ▄ ', '#93c5fd')
+  paint(grid, { x: x + 4, y: water + 2 }, b % 6 < 3 ? '▐°▌' : '▐█▌', '#e0f2fe', '#3b82f6')
   paint(grid, { x: x + 4, y: water + 3 }, '▐█▌', '#e5e7eb')
-  paint(grid, { x: x + 4, y: water + 4 }, 'water', PLACARD)
   paint(grid, { x: x + 4, y: snacks + 1 }, '▄▄▄▄', '#fde68a')
   paint(grid, { x: x + 4, y: snacks + 2 }, '●◦●◦', '#92400e', '#fde68a')
-  paint(grid, { x: x + 3, y: snacks + 4 }, 'snacks', PLACARD)
 }
 
 // ── hooks ─────────────────────────────────────────────────────────────────
@@ -817,7 +877,9 @@ export const register: Register = on => {
     ) => {
       const word = title.toUpperCase()
       const tail = status === '' ? '' : ` ${status}`
-      const fill = Math.max(2, W - 2 - word.length - 1 - tail.length - (toggle === undefined ? 0 : 2))
+      // A plain toggle draws as `u:▸`, after a space: the rule gives way so the status is never cut.
+      const control = toggle === undefined ? 0 : toggle.hotkey.length + 3
+      const fill = Math.max(2, W - 2 - word.length - 1 - tail.length - control)
 
       return (
         <Box key={key} flexDirection="column">
@@ -1015,7 +1077,7 @@ export const register: Register = on => {
         lit.set(actor.seat, actor.hue)
       }
     }
-    const grid = floorOf(ROOM, ROOM_ROWS)
+    const grid = floorOf(ROOM, planFor(ROOM))
     furnish(grid, ROOM, b, lit)
     for (const fig of [...figures, boss]) robot(grid, fig, b)
     const roomRows = grid.map((cells, y) => {
@@ -1027,7 +1089,7 @@ export const register: Register = on => {
       }
 
       return (
-        <Text key={`room${y}`}>
+        <Text key={`room${y}`} wrap="truncate-end">
           {runs.map((run, i) => (
             <Text key={`room${y}-${i}`} color={run.fg} backgroundColor={run.bg} bold={run.bold}>
               {run.ch}
@@ -1071,8 +1133,8 @@ export const register: Register = on => {
     const office = (
       <Box key="office" flexDirection="column">
         {heading('office', 160, isStaffed ? `${atWork} at work` : 'quiet', isStaffed ? hsl(160 + sway) : MUTED, 'office-h')}
-        <Box key="board" flexDirection="column" width={W} borderStyle="single" borderColor={TRACK} paddingX={1}>
-          {boardLines.length > 0 ? boardLines : <Text color={MUTED}>☕ all quiet. nothing on the board</Text>}
+        <Box key="board" flexDirection="column" width={W} borderStyle="round" borderColor={"#9ca3af"} paddingX={1}>
+          {boardLines.length > 0 ? boardLines : <Text color={MUTED}>◡ all quiet. nothing on the board</Text>}
         </Box>
         <Box key="room" flexDirection="column" width={W} borderStyle="round" borderColor={FLOOR_DOT} backgroundColor={FLOOR}>
           {roomRows}
@@ -1091,6 +1153,17 @@ export const register: Register = on => {
         {header}
         {sessionRow}
 
+        {heading('context', 185, prettyModel(modelId), MUTED, 'context')}
+        {row(
+          <Text>
+            <Text color={BRIGHT} bold>{tokensLabel(m?.tokens ?? 0)}</Text>
+            <Text color={MUTED}> of {tokensLabel(m?.window ?? 0)}</Text>
+          </Text>,
+          <Text color={hsl(heatHue(pct))} bold>{pct}%</Text>,
+          'ctx-n',
+        )}
+        <Text>{ctxBar}</Text>
+
         {heading('usage', 40, isUsageOpen ? '' : usageBrief, isUsageOpen ? MUTED : hsl(heatHue(usagePeak)), 'usage', false, {
           isOpen: isUsageOpen,
           hotkey: 'u',
@@ -1108,17 +1181,6 @@ export const register: Register = on => {
             {limitBlock('fable', 300, fable, 'fable')}
           </Box>
         )}
-
-        {heading('context', 185, prettyModel(modelId), MUTED, 'context')}
-        {row(
-          <Text>
-            <Text color={BRIGHT} bold>{tokensLabel(m?.tokens ?? 0)}</Text>
-            <Text color={MUTED}> of {tokensLabel(m?.window ?? 0)}</Text>
-          </Text>,
-          <Text color={hsl(heatHue(pct))} bold>{pct}%</Text>,
-          'ctx-n',
-        )}
-        <Text>{ctxBar}</Text>
 
         {spend !== null && (
           <Box key="spend" flexDirection="column">

@@ -1,6 +1,6 @@
 {
   "name": "aurora",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "Aurora sidebar: project, branch/worktree, 5h / week / Fable limits, context, ultracode; workflows and subagents as an office of robots.",
   "types": "./types/index.d.ts",
   "author": {

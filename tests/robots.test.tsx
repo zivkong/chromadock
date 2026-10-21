@@ -9,7 +9,8 @@ const SIDEBAR = {
 } as const
 
 test('at rest the office is quiet and the main robot wanders', async ($, on) => {
-  on('clock.now', () => ({ value: 1_000_000 }))
+  // Late in a wander stop, so the main robot has arrived and wears its labels.
+  on('clock.now', () => ({ value: 9000 * 1001 + 8000 }))
 
   const ui = await $.ui.mount(SIDEBAR as never)
   expect((await ui.find({ type: 'Text', text: /all quiet/ }))?.text).toContain('nothing on the board')
@@ -44,7 +45,7 @@ test('an agent gets a desk, a tool bubble, a roster line, and dozes when idle', 
   // Long after its last tool call, it nods off.
   now += 60_000
   const asleep = await $.ui.mount(SIDEBAR as never)
-  expect((await asleep.find({ type: 'Text', text: /zᶻ/ }))?.text).toContain('zᶻ')
+  expect((await asleep.find({ type: 'Text', text: /Dozing/ }))?.text).toContain('z Dozing')
   await asleep.unmount()
 })
 
@@ -61,4 +62,32 @@ test('usage folds to one line, and its toggle opens it', async ($, on) => {
   const open = await $.ui.mount(SIDEBAR as never)
   expect((await open.find({ type: 'Text', text: /^week/ }))?.text).toContain('week')
   await open.unmount()
+})
+
+test('a folded usage heading carries the whole summary', async ($, on) => {
+  on('clock.now', () => ({ value: 1_000_000 }))
+  // A session start with the engine answered: usage carries two capped windows, Fable none.
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'aurora' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.usage', () => ({
+    value: {
+      context: { tokens: 120_000, window: 1_000_000, percent: 12 },
+      rateLimits: [{ kind: 'five_hour', percentUsed: 34 }, { kind: 'seven_day', percentUsed: 12 }],
+      startedAt: 900_000,
+    },
+  }))
+  on('session.cwd', () => ({ value: '/' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }))
+  on('store.get', () => ({ value: undefined }))
+  on('clock.every', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(SIDEBAR as never)
+  const usage = await ui.find({ type: 'Text', text: /USAGE/ })
+  expect(usage?.text).toContain('5h 34% · wk 12% · f ∞')
+  expect(usage?.text.endsWith('5h 34% · wk 12% · f ∞')).toBe(true)
+  await ui.unmount()
 })
