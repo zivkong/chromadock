@@ -5,7 +5,7 @@ const SIDEBAR = {
   component: 'Pane',
   requestId: 'aurora',
   surface: 'terminal',
-  props: { title: 'aurora', isFocused: false, bodyColumns: 42, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} },
+  props: { title: 'aurora', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} },
 } as const
 
 test('at rest the office is quiet and the main robot wanders', async ($, on) => {
@@ -31,7 +31,7 @@ test('an agent gets a desk, a tool bubble, a roster line, and dozes when idle', 
   const seated = await $.ui.mount(SIDEBAR as never)
   expect((await seated.find({ type: 'Text', text: /1 at work/ }))?.text).toContain('1 at work')
   expect((await seated.find({ type: 'Text', text: /⟳1/ }))?.text).toContain('⟳1')
-  expect((await seated.find({ type: 'Text', text: /audit every/ }))?.text).toContain(task)
+  expect((await seated.find({ type: 'Text', text: /audit every CMS lifecycle/ }))?.text).toContain(task)
   await seated.unmount()
 
   // A tool call puts it in the robot's speech bubble and on the roster.

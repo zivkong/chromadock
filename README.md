@@ -82,7 +82,7 @@ In the desktop app, where `/plugin` does not run: click **+** next to the prompt
 
 | | |
 | :-- | :-- |
-| **Where it lives** | Docked on the right in Claude Code's **fullscreen** mode, 42 columns wide; a width you drag the dock to wins. |
+| **Where it lives** | Docked on the right in Claude Code's **fullscreen** mode, 56 columns wide (room for three desks across in the office; a narrower dock fits fewer); a width you drag the dock to wins. |
 | **Opening it** | Opens by itself on a terminal of 144 columns or more. Anywhere else, type `/aurora`. |
 | **Motion** | Colours drift and spinners turn only while something runs; at rest the sidebar holds perfectly still. |
 
