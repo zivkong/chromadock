@@ -696,7 +696,7 @@ export const register: Register = on => {
     const ROSTER_BAR = 7
     const RIGHT = Math.min(44, Math.floor(W / 2))
     const LEFT = W - RIGHT - 1
-    const room = Math.max(1, e.props.maxRows - boardLines.length - STAGE_ROWS - 1)
+    const room = Math.max(1, e.props.maxRows - 1 - boardLines.length - STAGE_ROWS - 1)
     // An agent's bar compares its time with the mean of its finished peers.
     const meanOf = (members: readonly AgentRow[]): number | null => {
       const spans = members.filter(a => a.endedAt !== null && a.status === 'done').map(a => (a.endedAt ?? 0) - a.startedAt)
@@ -745,6 +745,10 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" width={W}>
+        {/* Air between the engine's own row above and the board. */}
+        <Box key="air" height={1}>
+          <Text> </Text>
+        </Box>
         {boardLines.length > 0 ? boardLines : <Text color={GOOD}>{'▍ ✓ wrapping up'}</Text>}
         <Box height={STAGE_ROWS} width={W}>
           <Box key="conductor" position="absolute" left={1} top={isHopping ? 0 : 1} flexDirection="column">
