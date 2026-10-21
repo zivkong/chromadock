@@ -57,6 +57,7 @@ declare module 'claude-code' {
       session: { id: string; title: string | null } | null
       spendOpen: boolean
       usageOpen: boolean
+      officeArt: boolean
     }
   }
 }

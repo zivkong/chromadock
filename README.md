@@ -45,7 +45,9 @@ This month's spend **by model**, ranked, plus the open session, summed into a ru
 
 ### ▍ &nbsp;Office
 
-After the spend, an office of robots seen from above: a wall of windows, a navy carpet of desks whose monitors scroll code while their worker types, swaying plants down the left wall and a break area on its own carpet (steaming coffee, a bubbling water cooler, snacks) on the right, with a whiteboard over it showing each workflow's name, done/running/failed counts, time and a progress bar. The main robot, Claude, keeps the first desk while it works and at rest wanders to the coffee, the water and the team. Every agent is a chubby robot that walks in along the aisles, takes a desk and lights its monitor, with a status pill naming the tool it is using and its task beneath; idle for 30 s it nods off (zᶻ), and done it celebrates, takes a break, and heads out when its run closes. Under the room a roster lists every task in full with an estimated progress bar (its time against its finished peers' average; a shimmer until one finishes), model, time and tool count.
+After the spend, an office of robots. In terminals that draw pictures (Ghostty, kitty, iTerm2, WezTerm; not inside tmux) it is **animated pixel art**: a night wall of windows over a twinkling city, an exit door, a live team whiteboard, an aurora painting and a wall clock with the real time; wooden desks where robots peek over laptops whose lids glow in their colour, each desk with its own mug, succulent, papers or lamp; monstera plants; and a lounge on warm planks with a steaming espresso machine, a bubbling water cooler, a donut table and a sofa. Claude (in coral, with a little star) works at the first desk and at rest wanders to the coffee, the window, the water, the donuts and the sofa. Every agent is a chubby robot with its own colour and kit (headphones, a bow tie, a sprout) that walks in through the door, sits down and types, its status pill naming the tool it is using; idle for 30 s it dozes, done it cheers in confetti, takes a break in the lounge, and leaves when its run closes. Elsewhere the same office is drawn in text cells.
+
+A whiteboard of each workflow's name, counts, time and progress bar sits above the room, and under it a roster lists every task in full with an estimated progress bar (its time against its finished peers' average; a shimmer until one finishes), model, time and tool count.
 
 Usage and spend fold to one line each, usage to every window's share (`5h 34% · wk 12% · f ∞`) and spend to the month's total; ▸ (or `u` / `s` while the sidebar has focus) opens one, and the choice is remembered.
 
@@ -101,7 +103,8 @@ chromadock is a single hooks module with no dependencies beyond the Claude Code 
 
 | | |
 | :-- | :-- |
-| `hooks/register.tsx` | Listens to session, turn, tool, agent and usage events and draws the sidebar and its office of robots. |
+| `hooks/register.tsx` | Listens to session, turn, tool, agent and usage events and draws the sidebar and its office of robots in text cells. |
+| `hooks/pixel-office.ts` | Paints the pixel-art office frame by frame: sprites, a 3×5 pixel font, the scene and its animations. |
 | `scripts/month-spend.py` | Sums the month's spend from `~/.claude/projects`. It remembers where it stopped in each transcript, so after the first run it reads only new lines (milliseconds). |
 | `scripts/session-title.py` | Reads the session's title: a name from `/rename` wins over the generated one. |
 

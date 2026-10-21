@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, SessionContextUsage, SessionCost, SessionRateLimit } from 'claude-code'
 
 import type { AgentRow, FlowRow, FlowSummary, Git, Limit, Meter, MonthSpend } from '../types'
+import { drawOffice } from './pixel-office'
 
 const meter = atom({ plugin: 'aurora', key: 'meter' } as const, null)
 const git = atom({ plugin: 'aurora', key: 'git' } as const, null)
@@ -23,6 +24,8 @@ const SPEND_OPEN_KEY = 'spendOpen'
 // Whether the usage section is open, kept the same way.
 const usageOpen = atom({ plugin: 'aurora', key: 'usageOpen' } as const, false)
 const USAGE_OPEN_KEY = 'usageOpen'
+// Whether this terminal draws pictures, so the office is pixel art rather than text.
+const officeArt = atom({ plugin: 'aurora', key: 'officeArt' } as const, false)
 
 const PANE = 'aurora'
 // The sidebar asks the dock for this many columns; a width the person drags wins.
@@ -711,6 +714,18 @@ function furnish(grid: Cell[][], cols: number, b: number, lit: Map<number, numbe
   paint(grid, { x: x + 4, y: snacks + 2 }, '●◦●◦', '#92400e', '#fde68a')
 }
 
+// Ghostty, kitty, iTerm2 and WezTerm draw pictures in the terminal; tmux passes none through.
+async function drawsPictures($: EngineInterface): Promise<boolean> {
+  const tmux = (await $.env.get('TMUX').catch(() => undefined)) ?? ''
+  const program = ((await $.env.get('TERM_PROGRAM').catch(() => undefined)) ?? '').toLowerCase()
+  const term = ((await $.env.get('TERM').catch(() => undefined)) ?? '').toLowerCase()
+  const kitty = (await $.env.get('KITTY_WINDOW_ID').catch(() => undefined)) ?? ''
+
+  if (tmux !== '') return false
+
+  return ['ghostty', 'iterm.app', 'wezterm'].includes(program) || term.includes('kitty') || term.includes('ghostty') || kitty !== ''
+}
+
 // ── hooks ─────────────────────────────────────────────────────────────────
 
 export const register: Register = on => {
@@ -731,6 +746,7 @@ export const register: Register = on => {
     void refreshSession($)
     if ((await $.store.get(SPEND_OPEN_KEY).catch(() => undefined)) === true) await update($, spendOpen, () => true)
     if ((await $.store.get(USAGE_OPEN_KEY).catch(() => undefined)) === true) await update($, usageOpen, () => true)
+    if (await drawsPictures($)) await update($, officeArt, () => true)
 
     let ticks = 0
     $.clock.every(TICK_MS, () => {
@@ -841,6 +857,7 @@ export const register: Register = on => {
     const sess = await read($, session)
     const isSpendOpen = await read($, spendOpen)
     const isUsageOpen = await read($, usageOpen)
+    const isArt = (await read($, officeArt)) && e.surface === 'terminal'
     const b = await read($, beat)
     const now = await $.clock.now()
     // Content width: the body less one column of left padding and one spare at the right edge.
@@ -1077,8 +1094,34 @@ export const register: Register = on => {
       ]
     })
 
-    // The room: furniture first, then every robot (the main one last, on top), each with its labels.
-    const { figures, hidden } = workers(now, ROOM)
+    // The room: pixel art where the terminal draws pictures, else drawn in text cells.
+    const art = isArt
+      ? drawOffice({
+          cols: W,
+          now,
+          isWorking,
+          leading: atWork,
+          crew: [...cast.values()].map(a => ({
+            id: a.row.id,
+            seat: a.seat,
+            hue: a.hue,
+            name: a.row.label,
+            status: a.row.status,
+            startedAt: a.row.startedAt,
+            endedAt: a.row.endedAt,
+            goneAt: a.goneAt,
+            leftAt: a.leftAt,
+            lastTool: a.row.lastTool,
+            lastToolAt: a.row.lastToolAt,
+          })),
+          hours: new Date(now).getHours(),
+          minutes: new Date(now).getMinutes(),
+        })
+      : null
+    for (const id of art?.gone ?? []) cast.delete(id)
+    // Text-cell room: furniture first, then every robot (the main one last, on top), each with its labels.
+    const { figures, hidden: textHidden } = art === null ? workers(now, ROOM) : { figures: [], hidden: 0 }
+    const hidden = art?.hidden ?? textHidden
     const boss = mainRobot(now, ROOM, isWorking, atWork)
     const lit = new Map<number, number>()
     if (boss.pose === 'work') lit.set(0, boss.hue)
@@ -1087,9 +1130,11 @@ export const register: Register = on => {
         lit.set(actor.seat, actor.hue)
       }
     }
-    const grid = floorOf(ROOM, planFor(ROOM))
-    furnish(grid, ROOM, b, lit)
-    for (const fig of [...figures, boss]) robot(grid, fig, b)
+    const grid = art === null ? floorOf(ROOM, planFor(ROOM)) : []
+    if (art === null) {
+      furnish(grid, ROOM, b, lit)
+      for (const fig of [...figures, boss]) robot(grid, fig, b)
+    }
     const roomRows = grid.map((cells, y) => {
       const runs: Cell[] = []
       for (const cell of cells) {
@@ -1146,9 +1191,19 @@ export const register: Register = on => {
         <Box key="board" flexDirection="column" width={W} borderStyle="round" borderColor={"#9ca3af"} paddingX={1}>
           {boardLines.length > 0 ? boardLines : <Text color={MUTED}>all quiet · nothing on the board</Text>}
         </Box>
-        <Box key="room" flexDirection="column" width={W} borderStyle="round" borderColor={FLOOR_DOT} backgroundColor={FLOOR}>
-          {roomRows}
-        </Box>
+        {art !== null && e.surface === 'terminal' ? (
+          <Box key="room-art" width={W}>
+            {(() => {
+              const { Image } = $.ui.resolve(e)
+
+              return <Image key="office" source={{ rgba: art.rgba, width: art.width, height: art.height }} columns={W} rows={art.rows} alt="the office" />
+            })()}
+          </Box>
+        ) : (
+          <Box key="room" flexDirection="column" width={W} borderStyle="round" borderColor={FLOOR_DOT} backgroundColor={FLOOR}>
+            {roomRows}
+          </Box>
+        )}
         {hidden > 0 && <Text color={MUTED}>{` ▯ +${hidden} waiting in the hallway`}</Text>}
         {roster.length > 0 && gap('roster-g')}
         {roster}
