@@ -8,12 +8,12 @@ const SIDEBAR = {
   props: { title: 'aurora', isFocused: false, bodyColumns: 42, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} },
 } as const
 
-test('at rest the office is quiet, with the main robot at its desk', async ($, on) => {
+test('at rest the office is quiet and the main robot wanders', async ($, on) => {
   on('clock.now', () => ({ value: 1_000_000 }))
 
   const ui = await $.ui.mount(SIDEBAR as never)
   expect((await ui.find({ type: 'Text', text: /all quiet/ }))?.text).toContain('nothing on the board')
-  expect((await ui.find({ type: 'Text', text: /☕/ }))?.text).toContain('☕')
+  expect((await ui.find({ type: 'Text', text: /Claude/ }))?.text).toContain('Claude')
   await ui.unmount()
 })
 
