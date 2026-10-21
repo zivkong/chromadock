@@ -44,6 +44,7 @@ declare module 'claude-code' {
       meter: Meter | null
       git: Git | null
       frame: number
+      beat: number
       model: string
       effort: string | null
       agents: AgentRow[]

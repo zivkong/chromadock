@@ -6,6 +6,8 @@ import type { AgentRow, FlowRow, FlowSummary, Git, Limit, Meter, MonthSpend } fr
 const meter = atom({ plugin: 'aurora', key: 'meter' } as const, null)
 const git = atom({ plugin: 'aurora', key: 'git' } as const, null)
 const frame = atom({ plugin: 'aurora', key: 'frame' } as const, 0)
+// The robots' own clock, so the band and the hint line animate without redrawing the sidebar.
+const beat = atom({ plugin: 'aurora', key: 'beat' } as const, 0)
 const model = atom({ plugin: 'aurora', key: 'model' } as const, '')
 const effort = atom({ plugin: 'aurora', key: 'effort' } as const, null)
 const agents = atom({ plugin: 'aurora', key: 'agents' } as const, [])
@@ -29,8 +31,9 @@ const POLL_TICKS = Math.round(2_000 / TICK_MS)
 const FLOW_SETTLE_MS = 20_000
 // This month's spend is re-summed from transcripts this often (the script reads only new lines).
 const MONTH_TICKS = Math.round(300_000 / TICK_MS)
-// Workflow agents listed before the rest fold into "+n more".
-const FLOW_AGENT_ROWS = 8
+// Robots step every this many ticks: briskly while agents are on stage, a stroll at rest.
+const STAGE_TICKS = 2
+const STROLL_TICKS = 4
 
 // Palette from the Aurora Sidebar design: calm text, pastel rainbow.
 const TEXT = '#d4d4d8'
@@ -224,6 +227,7 @@ const live = new Map<string, AgentRow>()
 const runs = new Map<string, FlowRow>()
 
 async function publish($: EngineInterface) {
+  syncCast([...live.values()], await $.clock.now())
   await update($, agents, () => [...live.values()].map(a => ({ ...a })))
   await update($, flows, () => [...runs.values()].map(r => ({ ...r })))
 }
@@ -318,6 +322,147 @@ async function startTurn($: EngineInterface) {
   await update($, turn, () => ({ startedAt: now, endedAt: null, tools: 0 }))
 }
 
+// ── robots ────────────────────────────────────────────────────────────────
+// At rest the main robot strolls along the hint line under the prompt. Once an agent
+// is spawned the band above the prompt opens: the main robot conducts from its corner,
+// and each agent walks in from an edge, sits down and types, then cheers (✓) or fizzles
+// (✗) and walks off. The band closes when the last one has left.
+
+// A sprite row is runs of text: body-coloured, or a face drawn dark on the body colour.
+type Run = { text: string; isFace?: boolean }
+type Sprite = [Run[], Run[], Run[]]
+type Pose = 'stand' | 'walk' | 'type' | 'cheer' | 'fizzle' | 'conduct'
+
+type Actor = { row: AgentRow; seat: number; fromLeft: boolean; hue: number; goneAt: number | null }
+
+const SPRITE_COLS = 9
+const SEAT_COLS = 10
+// The conductor's corner, left of the first seat.
+const CORNER_COLS = 12
+// Rows of the stage: one for marks and hops above the heads, three for the robots.
+const STAGE_ROWS = 4
+const WALK_COLS_PER_S = 16
+// How long a finished robot cheers or fizzles in its seat before it walks off.
+const CHEER_MS = 1400
+const FACE_INK = '#18181b'
+
+// Module state like `live`: a reload clears the stage.
+const cast = new Map<string, Actor>()
+
+const hashOf = (id: string): number => [...id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7)
+
+const face = (b: number, pose: Pose): string => {
+  if (pose === 'fizzle') return ' ×_× '
+  if (pose === 'cheer') return ' ◕▿◕ '
+  if (pose === 'type') return ' •ᴗ• '
+  // A blink every few seconds.
+  return b % 23 === 22 ? ' –ᴗ– ' : ' ◕ᴗ◕ '
+}
+
+function sprite(pose: Pose, b: number): Sprite {
+  const head: Run[] = [{ text: '  ▄▄▄▄▄  ' }]
+  const body = (left: string, right: string): Run[] => [{ text: left }, { text: face(b, pose), isFace: true }, { text: right }]
+  const stride = b % 2 === 0 ? '  ▝▀ ▀▘  ' : '  ▀▘ ▝▀  '
+
+  switch (pose) {
+    case 'walk':
+      return [head, body(' ▐', '▌ '), [{ text: stride }]]
+    case 'type':
+      // The laptop's lid faces us; the hands tap at either side of it.
+      return [head, body(' ▐', '▌ '), [{ text: b % 2 === 0 ? '▖▕▀▀◦▀▀▏ ' : ' ▕▀▀◦▀▀▏▗' }]]
+    case 'cheer':
+      return [head, body(' ╲', '╱ '), [{ text: '  ▀▀ ▀▀  ' }]]
+    case 'conduct':
+      return [head, body(' ▐', b % 4 < 2 ? '▌╱' : '▌╲'), [{ text: '  ▀▀ ▀▀  ' }]]
+    default:
+      return [head, body(' ▐', '▌ '), [{ text: '  ▀▀ ▀▀  ' }]]
+  }
+}
+
+const seatX = (seat: number): number => CORNER_COLS + seat * SEAT_COLS
+
+// Follows the published agents: a newcomer takes the lowest free seat, and one that
+// leaves `live` without an outcome (a loose subagent) counts as done from that moment.
+function syncCast(rows: readonly AgentRow[], now: number) {
+  const seen = new Set<string>()
+
+  for (const row of rows) {
+    seen.add(row.id)
+    const actor = cast.get(row.id)
+
+    if (actor !== undefined) {
+      actor.row = row
+      continue
+    }
+    if (row.status !== 'running') continue
+
+    const taken = new Set([...cast.values()].map(a => a.seat))
+    let seat = 0
+    while (taken.has(seat)) seat += 1
+    const h = hashOf(row.id)
+    cast.set(row.id, { row, seat, fromLeft: h % 2 === 0, hue: (seat * 47 + 200) % 360, goneAt: null })
+  }
+
+  for (const actor of cast.values()) {
+    if (!seen.has(actor.row.id) && actor.row.endedAt === null && actor.goneAt === null) actor.goneAt = now
+  }
+}
+
+type Placed = { id: string; x: number; top: number; pose: Pose; hue: number; mark: string; markColor: string }
+
+// Where every robot stands now, worked out from the clock; robots that have walked off are dropped.
+function stage(now: number, cols: number): { placed: Placed[]; hidden: number } {
+  const seats = Math.max(1, Math.floor((cols - CORNER_COLS) / SEAT_COLS))
+  const walked = (ms: number) => (Math.max(0, ms) / 1000) * WALK_COLS_PER_S
+  const placed: Placed[] = []
+  let hidden = 0
+
+  for (const actor of cast.values()) {
+    const home = seatX(actor.seat)
+    const start = actor.fromLeft ? -SPRITE_COLS : cols
+    const endedAt = actor.row.endedAt ?? actor.goneAt
+    const isFailed = actor.row.status === 'failed'
+
+    if (endedAt !== null && now - endedAt > CHEER_MS) {
+      // Off by the nearer edge.
+      const isLeftward = home + SPRITE_COLS / 2 < cols / 2
+      const x = Math.round(isLeftward ? home - walked(now - endedAt - CHEER_MS) : home + walked(now - endedAt - CHEER_MS))
+
+      if (x < -SPRITE_COLS || x > cols) {
+        cast.delete(actor.row.id)
+        continue
+      }
+      if (actor.seat >= seats) continue
+      placed.push({ id: actor.row.id, x, top: 1, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED })
+      continue
+    }
+
+    if (actor.seat >= seats) {
+      hidden += 1
+      continue
+    }
+
+    if (endedAt !== null) {
+      const mark = isFailed ? '✗' : '✓'
+      placed.push({ id: actor.row.id, x: home, top: 1, pose: isFailed ? 'fizzle' : 'cheer', hue: actor.hue, mark, markColor: isFailed ? BAD : GOOD })
+      continue
+    }
+
+    const travelled = walked(now - actor.row.startedAt)
+    const distance = Math.abs(home - start)
+
+    if (travelled < distance) {
+      const x = Math.round(actor.fromLeft ? start + travelled : start - travelled)
+      placed.push({ id: actor.row.id, x, top: 1, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED })
+      continue
+    }
+
+    placed.push({ id: actor.row.id, x: home, top: 1, pose: 'type', hue: actor.hue, mark: fit(actor.row.label, SPRITE_COLS), markColor: hsl(actor.hue, 0.5, 0.72) })
+  }
+
+  return { placed, hidden }
+}
+
 // ── hooks ─────────────────────────────────────────────────────────────────
 
 export const register: Register = on => {
@@ -344,6 +489,7 @@ export const register: Register = on => {
       const isBusy = isWorking || live.size > 0
 
       if (isBusy || ticks % IDLE_TICKS === 0) void update($, frame, f => f + 1)
+      if (ticks % (live.size > 0 || cast.size > 0 ? STAGE_TICKS : STROLL_TICKS) === 0) void update($, beat, b => b + 1)
       if (ticks % POLL_TICKS === 0 && live.size > 0) void reconcile($)
     })
 
@@ -429,6 +575,90 @@ export const register: Register = on => {
     return done
   })
 
+  // ── the band above the prompt: open while any robot is on stage ──
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const b = await read($, beat)
+    const agentRows = await read($, agents)
+    const flowRows = await read($, flows)
+    const now = await $.clock.now()
+
+    if (e.props.hasSurvey || cast.size === 0) return next(e)
+
+    const { Box, Text } = $.ui.resolve(e)
+    const W = Math.max(CORNER_COLS + SEAT_COLS, e.props.bodyColumns)
+    const { placed, hidden } = stage(now, W)
+    const isRunning = agentRows.some(a => a.status === 'running')
+    const drift = b * 9
+
+    const draw = (s: Sprite, hue: number, color: string, key: string) =>
+      s.map((runs, r) => (
+        <Text key={`${key}-${r}`}>
+          {runs.map((run, i) => (
+            <Text key={`${key}-${r}-${i}`} color={run.isFace ? FACE_INK : color} backgroundColor={run.isFace ? hsl(hue, 0.7, 0.74) : undefined}>
+              {run.text}
+            </Text>
+          ))}
+        </Text>
+      ))
+
+    // The board: each workflow's name and count, then any loose agents.
+    const loose = agentRows.filter(a => a.runId === null && a.status === 'running').length
+    const boards = flowRows.map(run => {
+      const members = agentRows.filter(a => a.runId === run.runId)
+      const settled = members.filter(a => a.status !== 'running').length
+
+      return `${run.name} ${settled}/${members.length} · ${clock(now - run.startedAt)}`
+    })
+    const board = [...boards, ...(loose > 0 ? [`${loose} agent${loose === 1 ? '' : 's'}`] : [])].join('   ')
+    const spinner = SPINNER[b % SPINNER.length] ?? '◜'
+
+    // The conductor waves while anyone types, and hops once the last has finished.
+    const conductorHue = 330 + drift
+    const isHopping = !isRunning && b % 4 < 2
+
+    return (
+      <Box flexDirection="column" width={W}>
+        <Text wrap="truncate-end">
+          <Text color={hsl(conductorHue, 0.85, 0.7)} bold>{'▍ '}</Text>
+          <Text color={isRunning ? hsl(215 + drift) : GOOD}>{isRunning ? `${spinner} ` : '✓ '}</Text>
+          <Text color={TEXT}>{fit(board === '' ? 'wrapping up' : board, W - 6)}</Text>
+        </Text>
+        <Box height={STAGE_ROWS} width={W}>
+          <Box key="conductor" position="absolute" left={1} top={isHopping ? 0 : 1} flexDirection="column">
+            {draw(sprite(isRunning ? 'conduct' : 'cheer', b), conductorHue, hsl(conductorHue), 'c')}
+          </Box>
+          {placed.map(p => (
+            <Box key={`bot-${p.id}`} position="absolute" left={p.x} top={0} flexDirection="column">
+              <Text color={p.markColor} wrap="truncate-end">{p.mark === '' ? ' ' : p.mark.length === 1 ? `    ${p.mark}` : p.mark}</Text>
+              {draw(sprite(p.pose, b), p.hue, hsl(p.hue), `b${p.id}`)}
+            </Box>
+          ))}
+          {hidden > 0 && (
+            <Box key="crowd" position="absolute" left={Math.max(0, W - 10)} top={2}>
+              <Text color={MUTED}>+{hidden} more</Text>
+            </Box>
+          )}
+        </Box>
+      </Box>
+    )
+  })
+
+  // ── the hint line under the prompt: the main robot strolls there while the band is shut ──
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const b = await read($, beat)
+
+    if (cast.size > 0) return next(e)
+
+    const room = Math.max(6, Math.min(40, (e.viewport?.columns ?? 80) - e.props.hint.length - 14))
+    // Back and forth along `room` columns, a step a beat.
+    const lap = b % (room * 2)
+    const x = lap < room ? lap : room * 2 - lap
+    const look = e.props.isWorking ? '◕▿◕' : b % 23 === 22 ? '–ᴗ–' : '◕ᴗ◕'
+    const robot = `▐${look}▌${e.props.isWorking ? (b % 2 === 0 ? 'ҩ' : '·') : ''}`
+
+    return next({ ...e, props: { ...e.props, tail: `${' '.repeat(3 + x)}${robot}` } })
+  })
+
   // ── the sidebar ──
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const m = await read($, meter)
@@ -451,7 +681,6 @@ export const register: Register = on => {
     // Colour drifts while anything runs; at rest it holds still.
     const isAlive = isWorking || agentRows.some(a => a.status === 'running')
     const drift = isAlive ? f * 6 : 0
-    const spin = (offset = 0) => SPINNER[(f + offset) % SPINNER.length] ?? '◜'
 
     // ── primitives ──
     const gap = (key: string, rows = 1) => (
@@ -615,72 +844,6 @@ export const register: Register = on => {
     const isUltra = level === 'xhigh' || level === 'max'
     const turnMs = t === null ? 0 : (t.endedAt ?? now) - t.startedAt
 
-    // ── workflows ──
-    const flowBlocks = flowRows.map((run, i) => {
-      const members = agentRows.filter(a => a.runId === run.runId)
-      const running = members.filter(a => a.status === 'running').length
-      const failed = members.filter(a => a.status === 'failed').length
-      const done = members.filter(a => a.status === 'done').length
-      const total = members.length
-      const share = total > 0 ? ((done + failed) / total) * 100 : 0
-      const hidden = Math.max(0, total - FLOW_AGENT_ROWS)
-
-      return (
-        <Box key={`wf${i}`} flexDirection="column">
-          {heading('workflow', 215, running > 0 ? `${spin()} live` : '◇ settling', running > 0 ? hsl(215 + drift) : MUTED, `wf${i}-h`)}
-          {row(<Text color={BRIGHT} bold>{fit(run.name, W - 8)}</Text>, <Text color={MUTED}>{clock(now - run.startedAt)}</Text>, `wf${i}-n`)}
-          <Text>{bar(share, W, j => 215 + (j / W) * 70 + drift, `wf${i}b`)}</Text>
-          {row(
-            <Text>
-              <Text color={GOOD}>{done} done</Text>
-              <Text color={MUTED}>{' · '}</Text>
-              <Text color={hsl(215)}>{running} running</Text>
-              <Text color={MUTED}>{' · '}</Text>
-              <Text color={failed > 0 ? BAD : MUTED}>{failed} failed</Text>
-            </Text>,
-            <Text color={TEXT}>{done + failed}/{total}</Text>,
-            `wf${i}-s`,
-          )}
-          {gap(`wf${i}-g`)}
-          {members.slice(0, FLOW_AGENT_ROWS).map((a, j) => {
-            const mark = a.status === 'done' ? '✓' : a.status === 'failed' ? '✕' : spin(j)
-            const markColor = a.status === 'done' ? GOOD : a.status === 'failed' ? BAD : hsl(215 + j * 25 + drift)
-            const tail = `${familyOf(a.model)} ${clock((a.endedAt ?? now) - a.startedAt)}`
-
-            return row(
-              <Text>
-                <Text color={markColor}>{mark} </Text>
-                <Text color={a.status === 'running' ? BRIGHT : TEXT}>{fit(a.label, W - tail.length - 3)}</Text>
-              </Text>,
-              <Text color={a.status === 'running' ? hsl(215, 0.6, 0.8) : MUTED}>{tail}</Text>,
-              `wf${i}-a${j}`,
-            )
-          })}
-          {hidden > 0 && <Text color={MUTED}>{'  +'}{hidden} more</Text>}
-        </Box>
-      )
-    })
-
-    // ── loose subagents: three rows each, one quiet row between ──
-    const loose = agentRows.filter(a => a.runId === null && a.status === 'running')
-    const agentBlocks = loose.map((a, i) => (
-      <Box key={`ag${i}`} flexDirection="column">
-        {i > 0 && gap(`ag${i}-g`)}
-        {row(
-          <Text>
-            <Text color={hsl(285 + i * 35 + drift)}>{spin(i)} </Text>
-            <Text color={BRIGHT} bold>{a.type}</Text>
-          </Text>,
-          <Text color={MUTED}>{familyOf(a.model)}</Text>,
-          `ag${i}-t`,
-        )}
-        <Text color={TEXT} wrap="truncate-end">{'  '}{a.label}</Text>
-        <Text color={MUTED} wrap="truncate-end">
-          {'  '}{clock(now - a.startedAt)} · {a.tools} tool{a.tools === 1 ? '' : 's'}{a.lastTool === null ? '' : ` · ${a.lastTool}`}
-        </Text>
-      </Box>
-    ))
-
     return (
       <Box flexDirection="column" width={W + 1} paddingLeft={1}>
         {gap('top')}
@@ -756,11 +919,6 @@ export const register: Register = on => {
             )}
           </Box>
         )}
-
-        {flowBlocks}
-
-        {loose.length > 0 && heading('agents', 285, `${loose.length} live`, hsl(285 + drift), 'agents')}
-        {agentBlocks}
 
         {gap('bottom')}
       </Box>

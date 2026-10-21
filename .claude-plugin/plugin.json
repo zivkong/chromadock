@@ -1,7 +1,7 @@
 {
   "name": "aurora",
-  "version": "1.4.1",
-  "description": "Aurora sidebar: project, branch/worktree, 5h / week / Fable limits, context, ultracode, workflows and subagents.",
+  "version": "1.5.0",
+  "description": "Aurora sidebar: project, branch/worktree, 5h / week / Fable limits, context, ultracode; workflows and subagents as robots above the prompt.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Ziv Kong"

@@ -19,7 +19,7 @@
 <table align="center">
   <tr>
     <td width="460" valign="top">
-      <img src="assets/sidebar.svg" alt="The aurora sidebar: header, usage limits, context bar, spend by model and a running workflow" width="460">
+      <img src="assets/sidebar.svg" alt="The aurora sidebar: header, usage limits, context bar and spend by model" width="460">
     </td>
     <td valign="top">
 
@@ -41,7 +41,11 @@ This month's spend **by model**, ranked, plus the open session, summed into a ru
 
 ### ▍ &nbsp;Live work
 
-**Ultracode**, a running **workflow** (every agent, its model and time) and **subagents** (task, tool count, current tool) appear only while they are happening.
+**Ultracode** appears while it is on, with the last workflow's result.
+
+### ▍ &nbsp;Robots
+
+Workflows and subagents live **above the prompt**, not in the sidebar. At rest the main robot strolls along the hint line under the prompt and takes no rows. Once an agent is spawned a band opens: the main robot conducts from its corner beside a board of each workflow's count and time, and every agent is a chubby robot that walks in from an edge, sits down and types, then cheers ✓ or fizzles ✗ and walks off. The band closes when the last one has left; ctrl+x ctrl+a collapses it sooner.
 
 </td>
   </tr>
@@ -95,7 +99,7 @@ chromadock is a single hooks module with no dependencies beyond the Claude Code 
 
 | | |
 | :-- | :-- |
-| `hooks/register.tsx` | Listens to session, turn, tool, agent and usage events and draws the sidebar. |
+| `hooks/register.tsx` | Listens to session, turn, tool, agent and usage events and draws the sidebar, the robot band above the prompt and the robot on the hint line. |
 | `scripts/month-spend.py` | Sums the month's spend from `~/.claude/projects`. It remembers where it stopped in each transcript, so after the first run it reads only new lines (milliseconds). |
 | `scripts/session-title.py` | Reads the session's title: a name from `/rename` wins over the generated one. |
 
