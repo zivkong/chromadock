@@ -7,7 +7,7 @@
       "name": "aurora",
       "source": "./",
       "description": "Sidebar: project, branch/worktree, session, 5h / week / Fable limits, context, monthly spend by model, ultracode; workflows and subagents as an office of robots.",
-      "version": "1.11.0"
+      "version": "1.11.1"
     }
   ]
 }

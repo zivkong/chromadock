@@ -456,7 +456,7 @@ const aisleNear = (y: number): number => {
 
 const spots = (plan: Plan): { at: Point; says: string }[] => [
   { at: { x: deskOrigin(0, plan).x + DESK_COLS - 2, y: chairOf(0, plan).y }, says: '◌ Chatting' },
-  { at: { x: plan.breakX + 1, y: bandTop(0) + 4 }, says: '◡ Coffee' },
+  { at: { x: plan.breakX + 1, y: bandTop(0) + 4 }, says: '◦ Coffee' },
   { at: { x: plan.breakX + 1, y: bandTop(1) + 4 }, says: '◍ Water' },
   { at: { x: plan.breakX + 1, y: bandTop(2) + 4 }, says: '● Snacks' },
   { at: chairOf(0, plan), says: '▤ Reading' },
@@ -465,12 +465,24 @@ const spots = (plan: Plan): { at: Point; says: string }[] => [
 // Where a finished robot waits out its run: one to a band, beside the fixture.
 const breakSlot = (seat: number, plan: Plan): Point => ({ x: plan.breakX + 1, y: bandTop(seat % DESKS_DOWN) + 1 })
 
-// Out to the nearest aisle, along it, then in: robots never walk through a desk.
-const route = (from: Point, to: Point): Point[] => {
-  if (from.y === to.y && Math.abs(from.x - to.x) <= 3) return [from, to]
-  const aisle = aisleNear(from.y)
+// The clear column right of a desk, where robots cross between aisles.
+const laneNear = (x: number, plan: Plan): number => {
+  const k = Math.max(0, Math.min(plan.across - 1, Math.floor((x - WALL_COLS) / DESK_COLS)))
 
-  return [from, { x: from.x, y: aisle }, { x: to.x, y: aisle }, to]
+  return WALL_COLS + k * DESK_COLS + INSET + 7
+}
+
+// Out to the nearest aisle, along it to a clear lane (the lounge is one), down or up the
+// lane to the far aisle, along that, then in: robots never walk through a desk.
+const route = (from: Point, to: Point, plan: Plan): Point[] => {
+  if (from.y === to.y && Math.abs(from.x - to.x) <= 3) return [from, to]
+  const near = aisleNear(from.y)
+  const far = aisleNear(to.y)
+
+  if (near === far) return [from, { x: from.x, y: near }, { x: to.x, y: near }, to]
+  const lane = from.x >= plan.breakX || to.x >= plan.breakX ? plan.breakX + 1 : laneNear(from.x, plan)
+
+  return [from, { x: from.x, y: near }, { x: lane, y: near }, { x: lane, y: far }, { x: to.x, y: far }, to]
 }
 
 const pathMs = (path: readonly Point[]): number =>
@@ -541,13 +553,13 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
     }
 
     const slot = breakSlot(seat, plan)
-    const toBreak = route(chair, slot)
+    const toBreak = route(chair, slot, plan)
     const going = walk(toBreak, endedAt + CHEER_MS, now)
     const arrivedAt = endedAt + CHEER_MS + pathMs(toBreak)
     const leavesAt = actor.leftAt === null ? null : Math.max(actor.leftAt, arrivedAt + LINGER_MS)
 
     if (leavesAt !== null && now >= leavesAt) {
-      const out = walk(route(slot, { x: cols, y: aisleNear(slot.y) }), leavesAt, now)
+      const out = walk(route(slot, { x: cols, y: aisleNear(slot.y) }, plan), leavesAt, now)
 
       if (out.arrived) cast.delete(row.id)
       else figures.push({ ...base, at: out.at, pose: 'walk', status: '', tone: 'quiet' })
@@ -580,9 +592,9 @@ function mainRobot(now: number, cols: number, isBusy: boolean, leading: number):
   const here = stops[k % stops.length]
   const before = stops[(k + stops.length - 1) % stops.length]
 
-  if (here === undefined || before === undefined) return { ...base, at: chairOf(0, plan), pose: 'idle', status: '◡ Resting' }
+  if (here === undefined || before === undefined) return { ...base, at: chairOf(0, plan), pose: 'idle', status: '◦ Resting' }
 
-  const going = walk(route(before.at, here.at), k * WANDER_MS, now)
+  const going = walk(route(before.at, here.at, plan), k * WANDER_MS, now)
 
   return { ...base, at: going.at, pose: going.arrived ? 'idle' : 'walk', status: going.arrived ? here.says : '', tone: 'quiet' }
 }
@@ -674,8 +686,6 @@ function furnish(grid: Cell[][], cols: number, b: number, lit: Map<number, numbe
     paint(grid, { x: o.x + INSET, y: o.y + 1 }, '▐█████▌', DESK_TOP)
     paint(grid, { x: o.x + INSET + 2, y: o.y + 2 }, '▗▄▖', CHAIR)
   }
-  // Claude's mug, on the corner of the first desk.
-  paint(grid, { x: deskOrigin(0, plan).x + INSET + 6, y: deskOrigin(0, plan).y }, '◡', hsl(25, 0.7, 0.7))
 
   // Potted plants down the left wall, swaying a little.
   for (let k = 0; k < DESKS_DOWN; k += 1) {
@@ -877,8 +887,8 @@ export const register: Register = on => {
     ) => {
       const word = title.toUpperCase()
       const tail = status === '' ? '' : ` ${status}`
-      // A plain toggle draws as `u:▸`, after a space: the rule gives way so the status is never cut.
-      const control = toggle === undefined ? 0 : toggle.hotkey.length + 3
+      // A plain toggle draws as `u: ▸`, after a space: the rule gives way so the status is never cut.
+      const control = toggle === undefined ? 0 : toggle.hotkey.length + 4
       const fill = Math.max(2, W - 2 - word.length - 1 - tail.length - control)
 
       return (
@@ -1134,7 +1144,7 @@ export const register: Register = on => {
       <Box key="office" flexDirection="column">
         {heading('office', 160, isStaffed ? `${atWork} at work` : 'quiet', isStaffed ? hsl(160 + sway) : MUTED, 'office-h')}
         <Box key="board" flexDirection="column" width={W} borderStyle="round" borderColor={"#9ca3af"} paddingX={1}>
-          {boardLines.length > 0 ? boardLines : <Text color={MUTED}>◡ all quiet. nothing on the board</Text>}
+          {boardLines.length > 0 ? boardLines : <Text color={MUTED}>all quiet · nothing on the board</Text>}
         </Box>
         <Box key="room" flexDirection="column" width={W} borderStyle="round" borderColor={FLOOR_DOT} backgroundColor={FLOOR}>
           {roomRows}
