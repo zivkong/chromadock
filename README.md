@@ -47,7 +47,7 @@ This month's spend **by model**, ranked, plus the open session, summed into a ru
 
 After the spend, an office of robots seen from above on a navy floor: a grid of desks with monitors and chairs, plants down the left wall and a break area (coffee, water, snacks) on the right, with a whiteboard over it showing each workflow's name, done/running/failed counts, time and a progress bar. The main robot, Claude, keeps the first desk while it works and at rest wanders to the coffee, the water and the team. Every agent is a chubby robot that walks in, takes a desk and lights its monitor, labelled with its task and the tool it is using; idle for 30 s it nods off (zᶻ), and done it celebrates, takes a break, and heads out when its run closes. Under the room a roster lists every task in full with an estimated progress bar (its time against its finished peers' average; a shimmer until one finishes), model, time and tool count.
 
-The spend section folds to one line with the month's total; ▸ (or `s` while the sidebar has focus) opens it, and the choice is remembered.
+Usage and spend fold to one line each, usage to every window's share (`5h 34% · wk 12% · f ∞`) and spend to the month's total; ▸ (or `u` / `s` while the sidebar has focus) opens one, and the choice is remembered.
 
 </td>
   </tr>

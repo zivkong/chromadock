@@ -20,6 +20,9 @@ const session = atom({ plugin: 'aurora', key: 'session' } as const, null)
 // Whether the spend section is open; kept in $.store so the choice outlives the session.
 const spendOpen = atom({ plugin: 'aurora', key: 'spendOpen' } as const, false)
 const SPEND_OPEN_KEY = 'spendOpen'
+// Whether the usage section is open, kept the same way.
+const usageOpen = atom({ plugin: 'aurora', key: 'usageOpen' } as const, false)
+const USAGE_OPEN_KEY = 'usageOpen'
 
 const PANE = 'aurora'
 // The sidebar asks the dock for this many columns; a width the person drags wins.
@@ -643,6 +646,7 @@ export const register: Register = on => {
     void refreshMonth($)
     void refreshSession($)
     if ((await $.store.get(SPEND_OPEN_KEY).catch(() => undefined)) === true) await update($, spendOpen, () => true)
+    if ((await $.store.get(USAGE_OPEN_KEY).catch(() => undefined)) === true) await update($, usageOpen, () => true)
 
     let ticks = 0
     $.clock.every(TICK_MS, () => {
@@ -752,6 +756,7 @@ export const register: Register = on => {
     const spend = await read($, monthSpend)
     const sess = await read($, session)
     const isSpendOpen = await read($, spendOpen)
+    const isUsageOpen = await read($, usageOpen)
     const b = await read($, beat)
     const now = await $.clock.now()
     // Content width: the body less one column of left padding and one spare at the right edge.
@@ -907,6 +912,14 @@ export const register: Register = on => {
         </Box>
       )
     }
+
+    // Folded, the usage heading carries each window's share in one line, coloured by the fullest.
+    const fiveHour = findLimit(limits, k => k === 'five_hour')
+    const week = findLimit(limits, k => k === 'seven_day')
+    const fable = findLimit(limits, k => k.includes('fable'))
+    const share = (limit: Limit | undefined) => (m === null ? '…' : limit === undefined ? '∞' : `${Math.round(limit.percentUsed)}%`)
+    const usageBrief = `5h ${share(fiveHour)} · wk ${share(week)} · f ${share(fable)}`
+    const usagePeak = Math.max(0, ...[fiveHour, week, fable].map(l => l?.percentUsed ?? 0))
 
     // ── context ──
     const pct = m?.percent ?? (m?.tokens !== undefined && m.window > 0 ? Math.round((m.tokens / m.window) * 100) : 0)
@@ -1064,12 +1077,23 @@ export const register: Register = on => {
         {header}
         {sessionRow}
 
-        {heading('usage', 40, '', MUTED, 'usage')}
-        {limitBlock('5h', 30, findLimit(limits, k => k === 'five_hour'), 'five')}
-        {gap('u1')}
-        {limitBlock('week', 140, findLimit(limits, k => k === 'seven_day'), 'week')}
-        {gap('u2')}
-        {limitBlock('fable', 300, findLimit(limits, k => k.includes('fable')), 'fable')}
+        {heading('usage', 40, isUsageOpen ? '' : usageBrief, isUsageOpen ? MUTED : hsl(heatHue(usagePeak)), 'usage', false, {
+          isOpen: isUsageOpen,
+          hotkey: 'u',
+          onPress: async () => {
+            await update($, usageOpen, open => !open)
+            await $.store.set(USAGE_OPEN_KEY, !isUsageOpen)
+          },
+        })}
+        {isUsageOpen && (
+          <Box key="usage-body" flexDirection="column">
+            {limitBlock('5h', 30, fiveHour, 'five')}
+            {gap('u1')}
+            {limitBlock('week', 140, week, 'week')}
+            {gap('u2')}
+            {limitBlock('fable', 300, fable, 'fable')}
+          </Box>
+        )}
 
         {heading('context', 185, prettyModel(modelId), MUTED, 'context')}
         {row(

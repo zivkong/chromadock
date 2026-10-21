@@ -47,3 +47,18 @@ test('an agent gets a desk, a tool bubble, a roster line, and dozes when idle', 
   expect((await asleep.find({ type: 'Text', text: /zᶻ/ }))?.text).toContain('zᶻ')
   await asleep.unmount()
 })
+
+test('usage folds to one line, and its toggle opens it', async ($, on) => {
+  on('clock.now', () => ({ value: 1_000_000 }))
+  on('store.set', () => ({ value: undefined }))
+
+  const ui = await $.ui.mount(SIDEBAR as never)
+  expect((await ui.find({ type: 'Text', text: /5h … · wk … · f …/ }))?.text).toContain('5h … · wk … · f …')
+  expect(await ui.find({ type: 'Text', text: /^week/ })).toBeUndefined()
+
+  await ui.press({ key: 'usage-toggle' } as never)
+  await ui.unmount()
+  const open = await $.ui.mount(SIDEBAR as never)
+  expect((await open.find({ type: 'Text', text: /^week/ }))?.text).toContain('week')
+  await open.unmount()
+})

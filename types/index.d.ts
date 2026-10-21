@@ -56,6 +56,7 @@ declare module 'claude-code' {
       monthSpend: MonthSpend | null
       session: { id: string; title: string | null } | null
       spendOpen: boolean
+      usageOpen: boolean
     }
   }
 }
