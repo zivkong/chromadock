@@ -31,9 +31,9 @@ const POLL_TICKS = Math.round(2_000 / TICK_MS)
 const FLOW_SETTLE_MS = 20_000
 // This month's spend is re-summed from transcripts this often (the script reads only new lines).
 const MONTH_TICKS = Math.round(300_000 / TICK_MS)
-// Robots step every this many ticks: briskly while agents are on stage, a stroll at rest.
+// Robots step every this many ticks: briskly while agents are in the office, slowly at rest.
 const STAGE_TICKS = 2
-const STROLL_TICKS = 4
+const STROLL_TICKS = 8
 
 // Palette from the Aurora Sidebar design: calm text, pastel rainbow.
 const TEXT = '#d4d4d8'
@@ -48,7 +48,6 @@ const GOOD = '#86efac'
 const WARN = '#fcd34d'
 const BAD = '#fca5a5'
 const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
-const SPINNER = ['◜', '◝', '◞', '◟']
 
 let isWorking = false
 
@@ -324,10 +323,10 @@ async function startTurn($: EngineInterface) {
 }
 
 // ── robots ────────────────────────────────────────────────────────────────
-// At rest the main robot strolls along the hint line under the prompt. Once an agent
-// is spawned the band above the prompt opens: the main robot conducts from its corner,
-// and each agent walks in from an edge, sits down and types, then cheers (✓) or fizzles
-// (✗) and walks off. The band closes when the last one has left.
+// The sidebar's office, after the spend: a whiteboard of each run's progress, the main
+// robot's desk at the front (it types while Claude works and sips coffee at rest), and a
+// desk for every agent behind it. An agent walks in from an edge, sits down and types,
+// then cheers (✓) or fizzles (✗) and walks off; a roster under the room lists each task.
 
 // A sprite row is runs of text: body-coloured, or a face drawn dark on the body colour.
 type Run = { text: string; isFace?: boolean }
@@ -337,11 +336,13 @@ type Pose = 'stand' | 'walk' | 'type' | 'doze' | 'cheer' | 'fizzle' | 'conduct'
 type Actor = { row: AgentRow; seat: number; fromLeft: boolean; hue: number; goneAt: number | null }
 
 const SPRITE_COLS = 9
-const SEAT_COLS = 10
-// The conductor's corner, left of the first seat.
-const CORNER_COLS = 12
-// Rows of the stage: one for marks and hops above the heads, three for the robots.
-const STAGE_ROWS = 4
+// A desk is this wide; a desk row is a bubble, the robot's three rows and the desktop.
+const DESK_COLS = 12
+const DESK_ROWS = 5
+// Rows of desks the office holds; later arrivals wait in the hallway.
+const OFFICE_ROWS = 3
+// Agents listed on the roster before the rest fold into "+n more".
+const ROSTER_AGENTS = 12
 const WALK_COLS_PER_S = 16
 // How long a finished robot cheers or fizzles in its seat before it walks off.
 const CHEER_MS = 1400
@@ -392,8 +393,6 @@ function sprite(pose: Pose, b: number): Sprite {
   }
 }
 
-const seatX = (seat: number): number => CORNER_COLS + seat * SEAT_COLS
-
 // Follows the published agents: a newcomer takes the lowest free seat, and one that
 // leaves `live` without an outcome (a loose subagent) counts as done from that moment.
 function syncCast(rows: readonly AgentRow[], now: number) {
@@ -421,20 +420,21 @@ function syncCast(rows: readonly AgentRow[], now: number) {
   }
 }
 
-type Placed = { id: string; x: number; pose: Pose; hue: number; mark: string; markColor: string; sparkAt: number | null }
+type Placed = { id: string; desk: number; x: number; pose: Pose; hue: number; mark: string; markColor: string; sparkAt: number | null }
 
 // The speech bubble over a typing robot: the tool it called last.
 const bubble = (tool: string | null): string => (tool === null ? '  …' : fit(`${TOOL_GLYPH[tool] ?? '•'} ${tool}`, SPRITE_COLS))
 
 // Where every robot stands now, worked out from the clock; robots that have walked off are dropped.
-function stage(now: number, cols: number, b: number): { placed: Placed[]; hidden: number } {
-  const seats = Math.max(1, Math.floor((cols - CORNER_COLS) / SEAT_COLS))
+function stage(now: number, cols: number, b: number, perRow: number): { placed: Placed[]; hidden: number } {
+  const seats = perRow * OFFICE_ROWS
   const walked = (ms: number) => (Math.max(0, ms) / 1000) * WALK_COLS_PER_S
   const placed: Placed[] = []
   let hidden = 0
 
   for (const actor of cast.values()) {
-    const home = seatX(actor.seat)
+    const home = (actor.seat % perRow) * DESK_COLS + 1
+    const desk = Math.floor(actor.seat / perRow)
     const start = actor.fromLeft ? -SPRITE_COLS : cols
     const endedAt = actor.row.endedAt ?? actor.goneAt
     const isFailed = actor.row.status === 'failed'
@@ -449,7 +449,7 @@ function stage(now: number, cols: number, b: number): { placed: Placed[]; hidden
         continue
       }
       if (actor.seat >= seats) continue
-      placed.push({ id: actor.row.id, x, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED, sparkAt: null })
+      placed.push({ id: actor.row.id, desk, x, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED, sparkAt: null })
       continue
     }
 
@@ -461,7 +461,7 @@ function stage(now: number, cols: number, b: number): { placed: Placed[]; hidden
     if (endedAt !== null) {
       // Confetti that twinkles over a cheer; smoke that drifts over a fizzle.
       const mark = isFailed ? (b % 2 === 0 ? ' ░▒ ✗ ▒░' : '░▒  ✗  ▒') : b % 2 === 0 ? '✦ ✧ ✓ ✧ ✦' : ' ✧ ✦✓✦ ✧'
-      placed.push({ id: actor.row.id, x: home, pose: isFailed ? 'fizzle' : 'cheer', hue: actor.hue, mark, markColor: isFailed ? BAD : GOOD, sparkAt: null })
+      placed.push({ id: actor.row.id, desk, x: home, pose: isFailed ? 'fizzle' : 'cheer', hue: actor.hue, mark, markColor: isFailed ? BAD : GOOD, sparkAt: null })
       continue
     }
 
@@ -470,13 +470,14 @@ function stage(now: number, cols: number, b: number): { placed: Placed[]; hidden
 
     if (travelled < distance) {
       const x = Math.round(actor.fromLeft ? start + travelled : start - travelled)
-      placed.push({ id: actor.row.id, x, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED, sparkAt: null })
+      placed.push({ id: actor.row.id, desk, x, pose: 'walk', hue: actor.hue, mark: '', markColor: MUTED, sparkAt: null })
       continue
     }
 
     const isDozing = now - (actor.row.lastToolAt ?? actor.row.startedAt) > DOZE_MS
     placed.push({
       id: actor.row.id,
+      desk,
       x: home,
       pose: isDozing ? 'doze' : 'type',
       hue: actor.hue,
@@ -601,194 +602,6 @@ export const register: Register = on => {
     return done
   })
 
-  // ── the band above the prompt: open while any robot is on stage ──
-  // The board (each run's progress), the stage (the robots), then the roster (every agent in full).
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const b = await read($, beat)
-    const agentRows = await read($, agents)
-    const flowRows = await read($, flows)
-    const now = await $.clock.now()
-
-    if (e.props.hasSurvey || cast.size === 0) return next(e)
-
-    const { Box, Text } = $.ui.resolve(e)
-    const W = Math.max(CORNER_COLS + SEAT_COLS, e.props.bodyColumns)
-    const { placed, hidden } = stage(now, W, b)
-    const isRunning = agentRows.some(a => a.status === 'running')
-    const drift = b * 9
-    const conductorHue = 330 + drift
-    // The conductor waves while anyone types, and hops once the last has finished.
-    const isHopping = !isRunning && b % 4 < 2
-    const spinner = SPINNER[b % SPINNER.length] ?? '◜'
-
-    const draw = (s: Sprite, hue: number, color: string, key: string) =>
-      s.map((runs, r) => (
-        <Text key={`${key}-${r}`}>
-          {runs.map((run, i) => (
-            <Text key={`${key}-${r}-${i}`} color={run.isFace ? FACE_INK : color} backgroundColor={run.isFace ? hsl(hue, 0.7, 0.74) : undefined}>
-              {run.text}
-            </Text>
-          ))}
-        </Text>
-      ))
-
-    // A segmented bar; `pct` null draws a shimmer for work with no estimate yet.
-    const meter = (pct: number | null, cells: number, hue: (i: number) => number, key: string) =>
-      Array.from({ length: cells }, (_, i) => {
-        if (pct === null) {
-          const lit = Math.abs((b % (cells * 2)) - cells) === i
-
-          return <Text key={`${key}${i}`} color={lit ? hsl(hue(i)) : TRACK}>{lit ? '▰' : '▱'}</Text>
-        }
-        const isOn = i < Math.round((Math.min(100, Math.max(0, pct)) / 100) * cells)
-
-        return <Text key={`${key}${i}`} color={isOn ? hsl(hue(i)) : TRACK}>{isOn ? '▰' : '▱'}</Text>
-      })
-
-    // ── the board: one line per workflow, one for loose agents ──
-    const groups = [
-      ...flowRows.map(run => ({ key: run.runId, name: run.name, startedAt: run.startedAt, members: agentRows.filter(a => a.runId === run.runId) })),
-      ...(agentRows.some(a => a.runId === null)
-        ? [{ key: 'loose', name: 'agents', startedAt: Math.min(...agentRows.filter(a => a.runId === null).map(a => a.startedAt)), members: agentRows.filter(a => a.runId === null) }]
-        : []),
-    ]
-    const BOARD_BAR = Math.max(6, Math.min(16, Math.floor(W / 6)))
-    const boardLines = groups.map(g => {
-      const done = g.members.filter(a => a.status === 'done').length
-      const failed = g.members.filter(a => a.status === 'failed').length
-      const running = g.members.length - done - failed
-      const tail = `  ${clock(now - g.startedAt)}`
-      const counts = `  ✓${done} ⟳${running} ✗${failed}`
-
-      return (
-        <Text key={`board-${g.key}`} wrap="truncate-end">
-          <Text color={hsl(conductorHue, 0.85, 0.7)} bold>{'▍ '}</Text>
-          <Text color={running > 0 ? hsl(215 + drift) : GOOD}>{running > 0 ? `${spinner} ` : '✓ '}</Text>
-          <Text color={BRIGHT} bold>{fit(g.name, Math.max(8, W - BOARD_BAR - counts.length - tail.length - 8))}</Text>
-          <Text>{'  '}</Text>
-          {meter(g.members.length === 0 ? 0 : ((done + failed) / g.members.length) * 100, BOARD_BAR, i => (i / BOARD_BAR) * 300 + drift, `bb-${g.key}`)}
-          <Text color={MUTED}>{'  ✓'}</Text>
-          <Text color={GOOD}>{`${done}`}</Text>
-          <Text color={hsl(215)}>{` ⟳${running}`}</Text>
-          <Text color={failed > 0 ? BAD : MUTED}>{` ✗${failed}`}</Text>
-          <Text color={MUTED}>{tail}</Text>
-        </Text>
-      )
-    })
-
-    // ── sparks: the conductor's baton throws one at each robot that just called a tool ──
-    const sparks = placed.flatMap(p => {
-      const age = p.sparkAt === null ? Infinity : now - p.sparkAt
-
-      if (age > SPARK_MS) return []
-      const from = 10
-      const to = p.x + 4
-      const x = Math.round(from + (to - from) * (age / SPARK_MS))
-
-      return [
-        <Box key={`spark-${p.id}`} position="absolute" left={x} top={1}>
-          <Text color={hsl(p.hue + drift, 0.9, 0.8)} bold>{b % 2 === 0 ? '✦' : '✧'}</Text>
-        </Box>,
-      ]
-    })
-
-    // ── the roster: every agent's task in full, with an estimated progress bar ──
-    const ROSTER_BAR = 7
-    const RIGHT = Math.min(44, Math.floor(W / 2))
-    const LEFT = W - RIGHT - 1
-    const room = Math.max(1, e.props.maxRows - 1 - boardLines.length - STAGE_ROWS - 1)
-    // An agent's bar compares its time with the mean of its finished peers.
-    const meanOf = (members: readonly AgentRow[]): number | null => {
-      const spans = members.filter(a => a.endedAt !== null && a.status === 'done').map(a => (a.endedAt ?? 0) - a.startedAt)
-
-      return spans.length === 0 ? null : spans.reduce((x, y) => x + y, 0) / spans.length
-    }
-    const ordered = [...agentRows].sort((x, y) => x.startedAt - y.startedAt)
-    let used = 0
-    let folded = 0
-    const roster = ordered.flatMap(a => {
-      // A long task wraps; count its lines against the room the band has.
-      const lines = Math.max(1, Math.ceil((a.label.length + 2) / Math.max(10, LEFT)))
-
-      if (used + lines > room) {
-        folded += 1
-
-        return []
-      }
-      used += lines
-      const hue = cast.get(a.id)?.hue ?? 250
-      const mean = meanOf(agentRows.filter(m => m.runId === a.runId))
-      const elapsed = (a.endedAt ?? now) - a.startedAt
-      const pct = a.status !== 'running' ? 100 : mean === null ? null : Math.min(95, (elapsed / mean) * 100)
-      const isOver = a.status !== 'running'
-      const dot = a.status === 'done' ? '✓' : a.status === 'failed' ? '✗' : '●'
-      const dotColor = a.status === 'done' ? GOOD : a.status === 'failed' ? BAD : hsl(hue, 0.7, 0.74)
-      const stats = `${familyOf(a.model)} ${clock(elapsed)} · ${a.tools} tool${a.tools === 1 ? '' : 's'}${a.lastTool === null || isOver ? '' : ` · ${a.lastTool}`}`
-
-      return [
-        <Box key={`ro-${a.id}`} flexDirection="row" width={W}>
-          <Box width={LEFT}>
-            <Text wrap="wrap">
-              <Text color={dotColor}>{dot} </Text>
-              <Text color={isOver ? MUTED : TEXT}>{a.label}</Text>
-            </Text>
-          </Box>
-          <Box width={RIGHT + 1} justifyContent="flex-end">
-            <Text wrap="truncate-start">
-              {meter(pct, ROSTER_BAR, () => (a.status === 'failed' ? 0 : hue), `rb-${a.id}`)}
-              <Text color={isOver ? MUTED : hsl(hue, 0.5, 0.8)}>{` ${stats}`}</Text>
-            </Text>
-          </Box>
-        </Box>,
-      ]
-    })
-
-    return (
-      <Box flexDirection="column" width={W}>
-        {/* Air between the engine's own row above and the board. */}
-        <Box key="air" height={1}>
-          <Text> </Text>
-        </Box>
-        {boardLines.length > 0 ? boardLines : <Text color={GOOD}>{'▍ ✓ wrapping up'}</Text>}
-        <Box height={STAGE_ROWS} width={W}>
-          <Box key="conductor" position="absolute" left={1} top={isHopping ? 0 : 1} flexDirection="column">
-            {draw(sprite(isRunning ? 'conduct' : 'cheer', b), conductorHue, hsl(conductorHue), 'c')}
-          </Box>
-          {sparks}
-          {placed.map(p => (
-            <Box key={`bot-${p.id}`} position="absolute" left={p.x} top={0} flexDirection="column">
-              <Text color={p.markColor} wrap="truncate-end">{p.mark === '' ? ' ' : p.mark}</Text>
-              {draw(sprite(p.pose, b), p.hue, hsl(p.hue), `b${p.id}`)}
-            </Box>
-          ))}
-          {hidden > 0 && (
-            <Box key="crowd" position="absolute" left={Math.max(0, W - 10)} top={2}>
-              <Text color={MUTED}>+{hidden} more</Text>
-            </Box>
-          )}
-        </Box>
-        {roster}
-        {folded > 0 && <Text color={MUTED}>{`  +${folded} more`}</Text>}
-      </Box>
-    )
-  })
-
-  // ── the hint line under the prompt: the main robot strolls there while the band is shut ──
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const b = await read($, beat)
-
-    if (cast.size > 0) return next(e)
-
-    const room = Math.max(6, Math.min(40, (e.viewport?.columns ?? 80) - e.props.hint.length - 14))
-    // Back and forth along `room` columns, a step a beat.
-    const lap = b % (room * 2)
-    const x = lap < room ? lap : room * 2 - lap
-    const look = e.props.isWorking ? '◕▿◕' : b % 23 === 22 ? '–ᴗ–' : '◕ᴗ◕'
-    const robot = `▐${look}▌${e.props.isWorking ? (b % 2 === 0 ? 'ҩ' : '·') : ''}`
-
-    return next({ ...e, props: { ...e.props, tail: `${' '.repeat(3 + x)}${robot}` } })
-  })
-
   // ── the sidebar ──
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const m = await read($, meter)
@@ -803,6 +616,7 @@ export const register: Register = on => {
     const born = await read($, sessionStart)
     const spend = await read($, monthSpend)
     const sess = await read($, session)
+    const b = await read($, beat)
     const now = await $.clock.now()
     // Content width: the body less one column of left padding and one spare at the right edge.
     const W = Math.max(20, e.props.bodyColumns - 2)
@@ -974,6 +788,161 @@ export const register: Register = on => {
     const isUltra = level === 'xhigh' || level === 'max'
     const turnMs = t === null ? 0 : (t.endedAt ?? now) - t.startedAt
 
+    // ── office: a whiteboard, the main robot's desk at the front, a desk per agent behind ──
+    const ROOM = W - 2
+    const perRow = Math.max(1, Math.floor(ROOM / DESK_COLS))
+    const { placed, hidden } = stage(now, ROOM, b, perRow)
+    const atWork = agentRows.filter(a => a.status === 'running').length
+    const isStaffed = atWork > 0
+    const sway = isStaffed || isWorking ? b * 9 : 0
+    const bossHue = 330 + sway
+
+    const draw = (s: Sprite, hue: number, color: string, key: string) =>
+      s.map((runs, r) => (
+        <Text key={`${key}-${r}`}>
+          {runs.map((run, i) => (
+            <Text key={`${key}-${r}-${i}`} color={run.isFace ? FACE_INK : color} backgroundColor={run.isFace ? hsl(hue, 0.7, 0.74) : undefined}>
+              {run.text}
+            </Text>
+          ))}
+        </Text>
+      ))
+
+    // A segmented bar; `pct` null draws a shimmer for work with no estimate yet.
+    const gauge = (pct: number | null, cells: number, hue: (i: number) => number, key: string) =>
+      Array.from({ length: cells }, (_, i) => {
+        const isOn = pct === null ? Math.abs((b % (cells * 2)) - cells) === i : i < Math.round((Math.min(100, Math.max(0, pct)) / 100) * cells)
+
+        return <Text key={`${key}${i}`} color={isOn ? hsl(hue(i)) : TRACK}>{isOn ? '▰' : '▱'}</Text>
+      })
+
+    // The whiteboard: each run (and the loose agents) as a title line and a progress bar.
+    const looseRows = agentRows.filter(a => a.runId === null)
+    const groups = [
+      ...flowRows.map(run => ({ key: run.runId, name: run.name, startedAt: run.startedAt, members: agentRows.filter(a => a.runId === run.runId) })),
+      ...(looseRows.length > 0 ? [{ key: 'loose', name: 'agents', startedAt: Math.min(...looseRows.map(a => a.startedAt)), members: looseRows }] : []),
+    ]
+    const BOARD = ROOM - 4
+    const boardLines = groups.flatMap(g => {
+      const done = g.members.filter(a => a.status === 'done').length
+      const failed = g.members.filter(a => a.status === 'failed').length
+      const running = g.members.length - done - failed
+      const tail = `✓${done} ⟳${running} ✗${failed} ${clock(now - g.startedAt)}`
+
+      return [
+        <Box key={`bd-${g.key}`} flexDirection="row" justifyContent="space-between" width={BOARD}>
+          <Text color={BRIGHT} bold wrap="truncate-end">{fit(g.name, Math.max(6, BOARD - tail.length - 1))}</Text>
+          <Text>
+            <Text color={GOOD}>✓{done}</Text>
+            <Text color={hsl(215)}> ⟳{running}</Text>
+            <Text color={failed > 0 ? BAD : MUTED}> ✗{failed}</Text>
+            <Text color={MUTED}> {clock(now - g.startedAt)}</Text>
+          </Text>
+        </Box>,
+        <Text key={`bb-${g.key}`}>{gauge(g.members.length === 0 ? 0 : ((done + failed) / g.members.length) * 100, BOARD, i => (i / BOARD) * 300 + sway, `bm-${g.key}`)}</Text>,
+      ]
+    })
+
+    // The main robot: conducts from the front while agents work, types while Claude does, sips coffee at rest.
+    const isHopping = !isStaffed && cast.size > 0 && b % 4 < 2
+    const bossPose: Pose = isStaffed ? 'conduct' : cast.size > 0 ? 'cheer' : isWorking ? 'type' : 'stand'
+    const bossSays = isStaffed ? `☰ ${atWork} busy` : cast.size > 0 ? '✦ nice!' : isWorking ? '✎ on it' : b % 12 < 6 ? '  ☕' : '  ☕ ~'
+    const desktop = (key: string, left: number) => (
+      <Box key={key} position="absolute" left={left} top={DESK_ROWS - 1}>
+        <Text color={TRACK}>{'▔'.repeat(SPRITE_COLS + 1)}</Text>
+      </Box>
+    )
+    const front = (
+      <Box key="front" height={DESK_ROWS} width={ROOM}>
+        {desktop('boss-desk', 0)}
+        <Box key="boss" position="absolute" left={1} top={isHopping ? -1 : 0} flexDirection="column">
+          <Text color={hsl(bossHue, 0.6, 0.8)}>{bossSays}</Text>
+          {draw(sprite(bossPose, b), bossHue, hsl(bossHue), 'boss')}
+        </Box>
+        {/* A potted plant and the office clock, for company. */}
+        <Box key="plant" position="absolute" left={Math.max(SPRITE_COLS + 3, ROOM - 8)} top={0} flexDirection="column">
+          <Text color={MUTED}>{clock(now - born)}</Text>
+          <Text>
+            <Text color={hsl(330, 0.7, 0.78)}>✿</Text>
+            <Text color={hsl(120, 0.5, 0.6)}>{b % 16 < 8 ? '╲│╱' : '╲│╲'}</Text>
+            <Text color={hsl(45, 0.8, 0.75)}>❀</Text>
+          </Text>
+          <Text color={hsl(120, 0.5, 0.55)}>{' ╲│╱'}</Text>
+          <Text color={hsl(25, 0.5, 0.55)}>{' ▐██▌'}</Text>
+        </Box>
+      </Box>
+    )
+
+    const deskRows = Math.min(OFFICE_ROWS, Math.max(0, ...[...cast.values()].map(a => Math.floor(a.seat / perRow) + 1)))
+    const desks = Array.from({ length: deskRows }, (_, d) => (
+      <Box key={`row${d}`} height={DESK_ROWS} width={ROOM}>
+        {Array.from({ length: perRow }, (_, c) => desktop(`desk${d}-${c}`, c * DESK_COLS))}
+        {placed
+          .filter(p => p.desk === d && p.sparkAt !== null && now - p.sparkAt <= SPARK_MS)
+          .map(p => (
+            <Box key={`spark-${p.id}`} position="absolute" left={Math.round(((now - (p.sparkAt ?? now)) / SPARK_MS) * (p.x + 4))} top={1}>
+              <Text color={hsl(p.hue + sway, 0.9, 0.8)} bold>{b % 2 === 0 ? '✦' : '✧'}</Text>
+            </Box>
+          ))}
+        {placed
+          .filter(p => p.desk === d)
+          .map(p => (
+            <Box key={`bot-${p.id}`} position="absolute" left={p.x} top={0} flexDirection="column">
+              <Text color={p.markColor} wrap="truncate-end">{p.mark === '' ? ' ' : p.mark}</Text>
+              {draw(sprite(p.pose, b), p.hue, hsl(p.hue), `b${p.id}`)}
+            </Box>
+          ))}
+      </Box>
+    ))
+
+    // The roster: every task in full, then an estimated bar (its time against finished peers'), model and tools.
+    const meanOf = (members: readonly AgentRow[]): number | null => {
+      const spans = members.filter(a => a.status === 'done' && a.endedAt !== null).map(a => (a.endedAt ?? 0) - a.startedAt)
+
+      return spans.length === 0 ? null : spans.reduce((x, y) => x + y, 0) / spans.length
+    }
+    const ordered = [...agentRows].sort((x, y) => x.startedAt - y.startedAt)
+    const roster = ordered.slice(0, ROSTER_AGENTS).map(a => {
+      const hue = cast.get(a.id)?.hue ?? 250
+      const isOver = a.status !== 'running'
+      const elapsed = (a.endedAt ?? now) - a.startedAt
+      const mean = meanOf(agentRows.filter(m => m.runId === a.runId))
+      const pct = isOver ? 100 : mean === null ? null : Math.min(95, (elapsed / mean) * 100)
+      const dot = a.status === 'done' ? '✓' : a.status === 'failed' ? '✗' : '●'
+      const dotColor = a.status === 'done' ? GOOD : a.status === 'failed' ? BAD : hsl(hue, 0.7, 0.74)
+      const stats = `${familyOf(a.model)} ${clock(elapsed)} · ${a.tools} tool${a.tools === 1 ? '' : 's'}${a.lastTool === null || isOver ? '' : ` · ${a.lastTool}`}`
+
+      return (
+        <Box key={`ro-${a.id}`} flexDirection="column" width={W} marginBottom={1}>
+          <Text wrap="wrap">
+            <Text color={dotColor}>{dot} </Text>
+            <Text color={isOver ? MUTED : TEXT}>{a.label}</Text>
+          </Text>
+          <Text wrap="truncate-end">
+            {'  '}
+            {gauge(pct, 8, () => (a.status === 'failed' ? 0 : hue), `rb-${a.id}`)}
+            <Text color={isOver ? MUTED : hsl(hue, 0.5, 0.8)}>{` ${stats}`}</Text>
+          </Text>
+        </Box>
+      )
+    })
+    const office = (
+      <Box key="office" flexDirection="column">
+        {heading('office', 160, isStaffed ? `${atWork} at work` : 'quiet', isStaffed ? hsl(160 + sway) : MUTED, 'office-h')}
+        <Box key="room" flexDirection="column" width={W} borderStyle="round" borderColor={RULE}>
+          <Box key="board" flexDirection="column" width={ROOM} borderStyle="single" borderColor={TRACK} paddingX={1}>
+            {boardLines.length > 0 ? boardLines : <Text color={MUTED}>☕ all quiet. nothing on the board</Text>}
+          </Box>
+          {front}
+          {desks}
+          {hidden > 0 && <Text color={MUTED}>{` ▯ +${hidden} waiting in the hallway`}</Text>}
+        </Box>
+        {roster.length > 0 && gap('roster-g')}
+        {roster}
+        {ordered.length > ROSTER_AGENTS && <Text color={MUTED}>{`  +${ordered.length - ROSTER_AGENTS} more`}</Text>}
+      </Box>
+    )
+
     return (
       <Box flexDirection="column" width={W + 1} paddingLeft={1}>
         {gap('top')}
@@ -1023,6 +992,8 @@ export const register: Register = on => {
             <Text color={MUTED}>{spend.sessions + 1} sessions · API prices</Text>
           </Box>
         )}
+
+        {office}
 
         {isUltra && (
           <Box key="ultra" flexDirection="column">

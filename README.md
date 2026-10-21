@@ -43,9 +43,9 @@ This month's spend **by model**, ranked, plus the open session, summed into a ru
 
 **Ultracode** appears while it is on, with the last workflow's result.
 
-### ▍ &nbsp;Robots
+### ▍ &nbsp;Office
 
-Workflows and subagents live **above the prompt**, not in the sidebar. At rest the main robot strolls along the hint line under the prompt and takes no rows. Once an agent is spawned a band opens: the main robot conducts from its corner beside a board of each workflow's count and time, and every agent is a chubby robot that walks in from an edge, sits down and types, then cheers ✓ or fizzles ✗ and walks off. A speech bubble over each robot names the tool it is using, the conductor throws a spark at every new tool call, and a robot idle for 30 s nods off (zᶻ). Under the stage a roster lists every agent's task in full with an estimated progress bar (its time against its finished peers' average; a shimmer until one finishes), model, time and tool count. The band closes when the last one has left; ctrl+x ctrl+a collapses it sooner.
+After the spend, a little office of robots. A whiteboard shows each workflow's name, done/running/failed counts, time and a progress bar. The main robot has the front desk: it sips coffee at rest, types while Claude works, and conducts once agents arrive. Every agent is a chubby robot that walks in, takes a desk and types, with a speech bubble naming the tool it is using; the main robot throws a spark at each new tool call, a robot idle for 30 s nods off (zᶻ), and a finished one cheers ✓ or fizzles ✗ and walks off. Under the room a roster lists every task in full with an estimated progress bar (its time against its finished peers' average; a shimmer until one finishes), model, time and tool count.
 
 </td>
   </tr>
@@ -99,7 +99,7 @@ chromadock is a single hooks module with no dependencies beyond the Claude Code 
 
 | | |
 | :-- | :-- |
-| `hooks/register.tsx` | Listens to session, turn, tool, agent and usage events and draws the sidebar, the robot band above the prompt and the robot on the hint line. |
+| `hooks/register.tsx` | Listens to session, turn, tool, agent and usage events and draws the sidebar and its office of robots. |
 | `scripts/month-spend.py` | Sums the month's spend from `~/.claude/projects`. It remembers where it stopped in each transcript, so after the first run it reads only new lines (milliseconds). |
 | `scripts/session-title.py` | Reads the session's title: a name from `/rename` wins over the generated one. |
 
