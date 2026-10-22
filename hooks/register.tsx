@@ -38,6 +38,9 @@ const IDLE_TICKS = Math.round(30_000 / TICK_MS)
 const POLL_TICKS = Math.round(2_000 / TICK_MS)
 // A workflow with every agent settled and no spawn for this long is over.
 const FLOW_SETTLE_MS = 20_000
+// A workflow agent not heard from (no tool call or model step) for this long is taken as
+// finished: its end was missed (a stopped run, a reload). Heard from again, it is back at work.
+const STALE_MS = 30 * 60_000
 // This month's spend is re-summed from transcripts this often (the script reads only new lines).
 const MONTH_TICKS = Math.round(300_000 / TICK_MS)
 // Robots step every this many ticks: briskly while agents are in the office, slowly at rest.
@@ -295,29 +298,71 @@ async function reconcile($: EngineInterface) {
     for (const row of [...live.values()]) if (row.runId === null && !listedIds.has(row.id)) settle(row, 'done', now)
   }
 
-  for (const run of runs.values()) {
+  for (const row of [...live.values()]) {
+    const heardAt = row.activeAt ?? row.lastToolAt ?? row.startedAt
+    if (row.runId !== null && row.status === 'running' && now - heardAt > STALE_MS) settle(row, 'done', heardAt)
+  }
+
+  for (const run of [...runs.values()]) {
     const members = [...live.values()].filter(a => a.runId === run.runId)
     const isIdle = members.length > 0 && members.every(a => a.status !== 'running') && now - run.lastSpawnAt > FLOW_SETTLE_MS
 
-    if (!isIdle) continue
-
-    const ended = Math.max(...members.map(a => a.endedAt ?? now))
-    const summary: FlowSummary = {
-      name: run.name,
-      done: members.filter(a => a.status === 'done').length,
-      total: members.length,
-      failed: members.filter(a => a.status === 'failed').length,
-      ms: ended - run.startedAt,
-    }
-    await update($, lastFlow, () => summary)
-    for (const a of members) live.delete(a.id)
-    runs.delete(run.runId)
+    if (isIdle) await closeRun($, run, now)
   }
 
   await publish($)
 }
 
-async function trackAgent($: EngineInterface, id: string, label: string, type: string, modelId: string, runId: string | null) {
+// A run is over: it goes to the "last workflow" line and its agents leave the board.
+async function closeRun($: EngineInterface, run: FlowRow, now: number) {
+  const members = [...live.values()].filter(a => a.runId === run.runId)
+  const ended = members.length === 0 ? now : Math.max(...members.map(a => a.endedAt ?? now))
+  const summary: FlowSummary = {
+    name: run.name,
+    done: members.filter(a => a.status === 'done').length,
+    total: members.length,
+    failed: members.filter(a => a.status === 'failed').length,
+    ms: ended - run.startedAt,
+  }
+  await update($, lastFlow, () => summary)
+  for (const a of members) live.delete(a.id)
+  runs.delete(run.runId)
+}
+
+// What a background task's notification says: which task, which tool call started it, how it ended.
+type TaskEnd = { taskId: string | null; toolUseId: string | null; status: string }
+
+const tagOf = (body: string, tag: string): string | null => new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(body)?.[1]?.trim() ?? null
+
+const taskEndsIn = (text: string): TaskEnd[] =>
+  [...text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].map(([, body = '']) => ({
+    taskId: tagOf(body, 'task-id'),
+    toolUseId: tagOf(body, 'tool-use-id'),
+    status: tagOf(body, 'status') ?? 'completed',
+  }))
+
+// The engine's word that a background task ended. A workflow's run closes at once, its agents
+// still marked running settled with it (a stopped run's never report back); a subagent settles.
+async function endTasks($: EngineInterface, ends: readonly TaskEnd[]) {
+  if (ends.length === 0) return
+  const now = await $.clock.now()
+
+  for (const end of ends) {
+    const outcome = end.status === 'completed' ? 'done' : 'failed'
+    const run = [...runs.values()].find(r => (end.taskId !== null && r.taskId === end.taskId) || (end.toolUseId !== null && r.toolUseId === end.toolUseId))
+
+    if (run !== undefined) {
+      for (const a of [...live.values()]) if (a.runId === run.runId) settle(a, outcome, now)
+      await closeRun($, run, now)
+    }
+    const row = end.taskId === null ? undefined : live.get(end.taskId)
+    if (row !== undefined) settle(row, outcome, now)
+  }
+
+  await publish($)
+}
+
+async function trackAgent($: EngineInterface, id: string, label: string, type: string, modelId: string, runId: string | null, toolUseId: string) {
   const now = await $.clock.now()
   live.set(id, { id, label, type, model: modelId, runId, startedAt: now, endedAt: null, status: 'running', tools: 0, lastTool: null, lastToolAt: null, activeAt: now })
   // A resumed agent comes back in as a new robot if its last one is done and on its way out;
@@ -327,28 +372,42 @@ async function trackAgent($: EngineInterface, id: string, label: string, type: s
   if (runId !== null && runId !== '') {
     const run = runs.get(runId) ?? { runId, name: runId.slice(0, 9), startedAt: now, lastSpawnAt: now }
     run.lastSpawnAt = now
+    // Its agents share the Workflow call that started the run, which its notification names.
+    if (toolUseId !== '') run.toolUseId = toolUseId
     runs.set(runId, run)
   }
 
   await publish($)
 }
 
-async function trackRun($: EngineInterface, runId: string, workflowName: unknown) {
+async function trackRun($: EngineInterface, runId: string, workflowName: unknown, taskId: unknown, toolUseId: string | undefined) {
   const name = typeof workflowName === 'string' ? workflowName : runId.slice(0, 9)
   const now = await $.clock.now()
   const run = runs.get(runId) ?? { runId, name, startedAt: now, lastSpawnAt: now }
   run.name = name
+  if (typeof taskId === 'string') run.taskId = taskId
+  if (toolUseId !== undefined && toolUseId !== '') run.toolUseId = toolUseId
   runs.set(runId, run)
   await publish($)
+}
+
+// A workflow agent taken for finished (see STALE_MS) that is heard from again was not: back to
+// work, a new robot walking in if its last one has left or is leaving.
+function revive(row: AgentRow) {
+  if (row.status === 'running' || row.runId === null || !runs.has(row.runId)) return
+  row.status = 'running'
+  row.endedAt = null
+  if (cast.get(row.id)?.legs.at(-1)?.to.kind === 'door') cast.delete(row.id)
 }
 
 // A model step counts as activity, so an agent thinking hard is not sent on a break.
 async function touch($: EngineInterface, agentId: string) {
   const row = live.get(agentId)
 
-  if (row === undefined || row.status !== 'running') return
+  if (row === undefined) return
   row.activeAt = await $.clock.now()
   row.isWaiting = false
+  revive(row)
   await publish($)
 }
 
@@ -367,6 +426,7 @@ async function countTool($: EngineInterface, agentId: string | undefined, tool: 
   row.lastTool = tool
   row.lastToolAt = await $.clock.now()
   row.activeAt = row.lastToolAt
+  revive(row)
   await publish($)
 }
 
@@ -909,6 +969,7 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     isWorking = true
     await startTurn($).catch(() => undefined)
+    if (e.origin.kind === 'task-notification' || e.text.includes('<task-notification>')) await endTasks($, taskEndsIn(e.text)).catch(() => undefined)
 
     return next(e)
   })
@@ -932,7 +993,7 @@ export const register: Register = on => {
     // Bookkeeping only: it never fails the spawn itself.
     if ('agentId' in started && typeof started.agentId === 'string') {
       const runId = e.workflow?.runId ?? null
-      await trackAgent($, started.agentId, e.description, e.subagentType, started.model, runId).catch(() => undefined)
+      await trackAgent($, started.agentId, e.description, e.subagentType, started.model, runId, e.tool_use_id).catch(() => undefined)
     }
 
     return started
@@ -946,7 +1007,7 @@ export const register: Register = on => {
       const result: unknown = done.result
 
       if (isRecord(result) && typeof result.runId === 'string') {
-        await trackRun($, result.runId, result.workflowName).catch(() => undefined)
+        await trackRun($, result.runId, result.workflowName, result.taskId, e.tool_use_id).catch(() => undefined)
       }
     }
 
@@ -1294,7 +1355,8 @@ export const register: Register = on => {
 
       return spans.length === 0 ? null : spans.reduce((x, y) => x + y, 0) / spans.length
     }
-    const ordered = [...agentRows].sort((x, y) => x.startedAt - y.startedAt)
+    // Only those still at it: a finished agent leaves the roster at once (the board keeps its count).
+    const ordered = agentRows.filter(a => a.status === 'running').sort((x, y) => x.startedAt - y.startedAt)
     const roster = ordered.slice(0, ROSTER_AGENTS).map(a => {
       const hue = cast.get(a.id)?.hue ?? 250
       const isOver = a.status !== 'running'

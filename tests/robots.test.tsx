@@ -73,7 +73,9 @@ test('a finished workflow agent leaves the room while its run goes on, and a res
   // A robot on its break wears its lone mark beside its head; none is left in the room.
   expect(await after.find({ type: 'Text', text: /^✓$/ })).toBeUndefined()
   expect(await after.find({ type: 'Text', text: /Done!/ })).toBeUndefined()
-  expect(await after.find({ type: 'Text', text: /map the/ })).toBeDefined()
+  // Off the roster too; the board still counts it while its run goes on.
+  expect(await after.find({ type: 'Text', text: /map the/ })).toBeUndefined()
+  expect((await after.find({ type: 'Text', text: /✓1/ }))?.text).toContain('✓1')
   await after.unmount()
 
   // The workflow resumes the agent: a fresh robot walks in and gets to work.
@@ -154,6 +156,77 @@ test('an agent that finishes on its way in reaches its desk before it celebrates
   const walking = await $.ui.mount(SIDEBAR as never)
   expect(await walking.find({ type: 'Text', text: /Done!/ })).toBeUndefined()
   await walking.unmount()
+})
+
+test('the roster drops finished agents, and a workflow notification closes its run and its stragglers', async ($, on) => {
+  let now = 12_000_000
+  let k = 0
+  on('clock.now', () => ({ value: now }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `agent-w${(k += 1)}` }))
+  on('turn.complete', () => ({ text: '' }))
+  on('prompt.submit', () => ({ text: '' }))
+
+  const spawn = (description: string, i: number) =>
+    $.agent.spawn({ tool_use_id: 'toolu_wave', prompt: 'p', description, subagentType: 'general-purpose', parentModel: 'm', workflow: { runId: 'wf_wave', agentIndex: i } } as never)
+  await spawn('review #301 security', 1)
+  await spawn('merge #301', 2)
+  now += 5_000
+  await $.turn.complete({ agentId: 'agent-w1', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't4' } as never)
+
+  // The finished review is off the roster; the board still counts it.
+  const mid = await $.ui.mount(SIDEBAR as never)
+  expect(await mid.find({ type: 'Text', text: /[●✓] review #301 security/ })).toBeUndefined()
+  expect((await mid.find({ type: 'Text', text: /● merge #301/ }))?.text).toContain('merge #301')
+  expect((await mid.find({ type: 'Text', text: /✓1/ }))?.text).toContain('✓1')
+  await mid.unmount()
+
+  // The run is stopped: its notification names the Workflow call; the merge never reported back.
+  now += 5_000
+  await $.prompt.submit({
+    text: '<task-notification>\n<task-id>wtask1</task-id>\n<tool-use-id>toolu_wave</tool-use-id>\n<status>killed</status>\n<summary>stopped</summary>\n</task-notification>',
+    origin: { kind: 'task-notification' },
+  } as never)
+  const after = await $.ui.mount(SIDEBAR as never)
+  expect(await after.find({ type: 'Text', text: /[●✓✗] merge #301/ })).toBeUndefined()
+  expect(await after.find({ type: 'Text', text: /wf_wave/ })).toBeUndefined()
+  expect(await after.find({ type: 'Text', text: /⟳1/ })).toBeUndefined()
+  await after.unmount()
+})
+
+test('a ghost run restored from old state, with nothing heard for half an hour, is closed', async ($, on) => {
+  const now = 20_000_000
+  on('clock.now', () => ({ value: now }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'aurora' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [], startedAt: 900_000 } }))
+  on('session.cwd', () => ({ value: '/' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }))
+  on('store.get', () => ({ value: undefined }))
+  on('clock.every', () => ({ value: undefined }))
+
+  const left: Record<string, unknown> = {
+    agents: [{
+      id: 'agent-g', label: 'build #145', type: 'general-purpose', model: 'claude-opus-5-5', runId: 'wf_ghost',
+      startedAt: now - 3_600_000, endedAt: null, status: 'running', tools: 32, lastTool: 'Bash', lastToolAt: now - 2_400_000, activeAt: now - 2_400_000,
+    }],
+    flows: [{ runId: 'wf_ghost', name: 'wf_ghost', startedAt: now - 3_600_000, lastSpawnAt: now - 3_600_000 }],
+  }
+  on('state.get', ($s, e, next) => {
+    const key = (e as { key: string }).key
+    if (!(key in left)) return next(e)
+    const value = left[key]
+    delete left[key]
+    return { value: { value, version: 1 } }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount(SIDEBAR as never)
+  expect(await ui.find({ type: 'Text', text: /● build #145/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /wf_ghost/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('usage folds to one line, and its toggle opens it', async ($, on) => {

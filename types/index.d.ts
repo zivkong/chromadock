@@ -35,7 +35,15 @@ export type AgentRow = {
   isWaiting?: boolean
 }
 
-export type FlowRow = { runId: string; name: string; startedAt: number; lastSpawnAt: number }
+export type FlowRow = {
+  runId: string
+  name: string
+  startedAt: number
+  lastSpawnAt: number
+  // The background task and the Workflow call that started it, as its end's notification names them.
+  taskId?: string
+  toolUseId?: string
+}
 
 export type FlowSummary = { name: string; done: number; total: number; failed: number; ms: number }
 
