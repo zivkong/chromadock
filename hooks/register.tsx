@@ -290,6 +290,8 @@ async function reconcile($: EngineInterface) {
 async function trackAgent($: EngineInterface, id: string, label: string, type: string, modelId: string, runId: string | null) {
   const now = await $.clock.now()
   live.set(id, { id, label, type, model: modelId, runId, startedAt: now, endedAt: null, status: 'running', tools: 0, lastTool: null, lastToolAt: null })
+  // A resumed agent comes back in as a new robot, even if its last one is still on the way out.
+  cast.delete(id)
 
   if (runId !== null && runId !== '') {
     const run = runs.get(runId) ?? { runId, name: runId.slice(0, 9), startedAt: now, lastSpawnAt: now }
@@ -336,13 +338,13 @@ async function startTurn($: EngineInterface) {
 // down the left wall and a break area on its own carpet at the right. The main robot keeps
 // the first desk: it works there while Claude does, and at rest wanders to the coffee, the
 // water and the team. Each agent walks in along the aisles, takes a desk and lights its
-// monitor, labelled with the tool it called last; done, it heads for the break area until
-// its run closes, then leaves. Every glyph in the room is one cell wide, and every row is
+// monitor, labelled with the tool it called last; done, it celebrates at its desk and walks
+// out the door it came in by, freeing the desk. A resumed agent comes back in as a new robot. Every glyph in the room is one cell wide, and every row is
 // cut to the room's width, so nothing can wrap and shift the rows below.
 
 type Pose = 'walk' | 'work' | 'doze' | 'idle' | 'cheer' | 'fizzle'
 type Point = { x: number; y: number }
-type Actor = { row: AgentRow; seat: number; fromLeft: boolean; hue: number; goneAt: number | null; leftAt: number | null }
+type Actor = { row: AgentRow; seat: number; fromLeft: boolean; hue: number; goneAt: number | null }
 type Cell = { ch: string; fg: string; bg: string; bold: boolean }
 type Figure = { key: string; at: Point; pose: Pose; hue: number; status: string; name: string; tone: 'work' | 'good' | 'bad' | 'quiet' }
 
@@ -377,9 +379,8 @@ const WALL_COLS = 4
 const BREAK_COLS = 9
 const ROOM_ROWS = TOP + DESKS_DOWN * PITCH
 const WALK_COLS_PER_S = 8
-// How long a finished robot celebrates at its desk, then lingers at the break area once its run has closed.
+// How long a finished robot celebrates at its desk before it walks out.
 const CHEER_MS = 1400
-const LINGER_MS = 4000
 // A robot with no tool call for this long nods off.
 const DOZE_MS = 30_000
 // At rest the main robot moves on to its next spot this often.
@@ -398,7 +399,7 @@ const cast = new Map<string, Actor>()
 const hashOf = (id: string): number => [...id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7)
 
 // Follows the published agents: a newcomer takes the lowest free desk after the main robot's,
-// and one that leaves `live` is marked gone (without an outcome it counts as done).
+// and one that leaves `live` without an outcome is marked gone (it counts as done).
 function syncCast(rows: readonly AgentRow[], now: number) {
   const seen = new Set<string>()
 
@@ -415,13 +416,12 @@ function syncCast(rows: readonly AgentRow[], now: number) {
     const taken = new Set([...cast.values()].map(a => a.seat))
     let seat = 1
     while (taken.has(seat)) seat += 1
-    cast.set(row.id, { row, seat, fromLeft: hashOf(row.id) % 2 === 0, hue: (seat * 47 + 160) % 360, goneAt: null, leftAt: null })
+    cast.set(row.id, { row, seat, fromLeft: hashOf(row.id) % 2 === 0, hue: (seat * 47 + 160) % 360, goneAt: null })
   }
 
   for (const actor of cast.values()) {
     if (seen.has(actor.row.id)) continue
     if (actor.row.endedAt === null && actor.goneAt === null) actor.goneAt = now
-    actor.leftAt ??= now
   }
 }
 
@@ -464,9 +464,6 @@ const spots = (plan: Plan): { at: Point; says: string }[] => [
   { at: { x: plan.breakX + 1, y: bandTop(2) + 4 }, says: '● Snacks' },
   { at: chairOf(0, plan), says: '▤ Reading' },
 ]
-
-// Where a finished robot waits out its run: one to a band, beside the fixture.
-const breakSlot = (seat: number, plan: Plan): Point => ({ x: plan.breakX + 1, y: bandTop(seat % DESKS_DOWN) + 1 })
 
 // The clear column right of a desk, where robots cross between aisles.
 const laneNear = (x: number, plan: Plan): number => {
@@ -530,12 +527,13 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
 
     if (seat >= desks) {
       if (endedAt === null) hidden += 1
-      else if (actor.leftAt !== null) cast.delete(row.id)
+      else cast.delete(row.id)
       continue
     }
 
+    const door: Point = { x: actor.fromLeft ? -3 : cols, y: aisleNear(chair.y) }
+
     if (endedAt === null) {
-      const door: Point = { x: actor.fromLeft ? -3 : cols, y: aisleNear(chair.y) }
       const going = walk([door, { x: chair.x, y: door.y }, chair], row.startedAt, now)
 
       if (!going.arrived) {
@@ -549,33 +547,16 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
       continue
     }
 
-    // Done: celebrate at the desk, take a break, and leave once the run has closed.
+    // Done: celebrate at the desk, then walk out the way it came in.
     if (now - endedAt < CHEER_MS) {
       figures.push({ ...base, at: chair, pose: isFailed ? 'fizzle' : 'cheer', status: isFailed ? '✗ Crashed' : '✓ Done!', tone: isFailed ? 'bad' : 'good' })
       continue
     }
 
-    const slot = breakSlot(seat, plan)
-    const toBreak = route(chair, slot, plan)
-    const going = walk(toBreak, endedAt + CHEER_MS, now)
-    const arrivedAt = endedAt + CHEER_MS + pathMs(toBreak)
-    const leavesAt = actor.leftAt === null ? null : Math.max(actor.leftAt, arrivedAt + LINGER_MS)
+    const out = walk(route(chair, door, plan), endedAt + CHEER_MS, now)
 
-    if (leavesAt !== null && now >= leavesAt) {
-      const out = walk(route(slot, { x: cols, y: aisleNear(slot.y) }, plan), leavesAt, now)
-
-      if (out.arrived) cast.delete(row.id)
-      else figures.push({ ...base, at: out.at, pose: 'walk', status: '', tone: 'quiet' })
-      continue
-    }
-
-    figures.push({
-      ...base,
-      at: going.at,
-      pose: going.arrived ? 'idle' : 'walk',
-      status: going.arrived ? (isFailed ? '✗ Crashed' : '✓ On break') : '',
-      tone: isFailed ? 'bad' : 'good',
-    })
+    if (out.arrived) cast.delete(row.id)
+    else figures.push({ ...base, at: out.at, pose: 'walk', status: '', tone: isFailed ? 'bad' : 'good' })
   }
 
   return { figures, hidden }
@@ -1110,7 +1091,6 @@ export const register: Register = on => {
             startedAt: a.row.startedAt,
             endedAt: a.row.endedAt,
             goneAt: a.goneAt,
-            leftAt: a.leftAt,
             lastTool: a.row.lastTool,
             lastToolAt: a.row.lastToolAt,
           })),

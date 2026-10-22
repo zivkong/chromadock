@@ -49,6 +49,42 @@ test('an agent gets a desk, a tool bubble, a roster line, and dozes when idle', 
   await asleep.unmount()
 })
 
+test('a finished workflow agent leaves the room while its run goes on, and a resume brings a robot back', async ($, on) => {
+  let now = 1_000_000
+  on('clock.now', () => ({ value: now }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'agent-1' }))
+  on('turn.complete', () => ({ text: '' }))
+
+  const spawn = (resume?: { agentId: string }) =>
+    $.agent.spawn({ prompt: 'p', description: 'map the ledger', subagentType: 'general-purpose', parentModel: 'm', workflow: { runId: 'wf_1', agentIndex: 1 }, resume } as never)
+
+  await spawn()
+  now += 10_000
+  await $.turn.complete({ agentId: 'agent-1', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+
+  // Celebrating at the desk first.
+  const cheering = await $.ui.mount(SIDEBAR as never)
+  expect((await cheering.find({ type: 'Text', text: /Done!/ }))?.text).toContain('✓ Done!')
+  await cheering.unmount()
+
+  // Then out the door: no break-room wait for the run to close, and the desk is free again.
+  now += 30_000
+  const after = await $.ui.mount(SIDEBAR as never)
+  // A robot on its break wears its lone mark beside its head; none is left in the room.
+  expect(await after.find({ type: 'Text', text: /^✓$/ })).toBeUndefined()
+  expect(await after.find({ type: 'Text', text: /Done!/ })).toBeUndefined()
+  expect(await after.find({ type: 'Text', text: /map the/ })).toBeDefined()
+  await after.unmount()
+
+  // The workflow resumes the agent: a fresh robot walks in and gets to work.
+  await spawn({ agentId: 'agent-1' })
+  now += 10_000
+  const back = await $.ui.mount(SIDEBAR as never)
+  expect((await back.find({ type: 'Text', text: /1 at work/ }))?.text).toContain('1 at work')
+  expect((await back.find({ type: 'Text', text: /Starting/ }))?.text).toContain('Starting')
+  await back.unmount()
+})
+
 test('usage folds to one line, and its toggle opens it', async ($, on) => {
   on('clock.now', () => ({ value: 1_000_000 }))
   on('store.set', () => ({ value: undefined }))

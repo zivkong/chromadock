@@ -17,7 +17,6 @@ export type Crew = {
   startedAt: number
   endedAt: number | null
   goneAt: number | null
-  leftAt: number | null
   lastTool: string | null
   lastToolAt: number | null
 }
@@ -54,7 +53,6 @@ const FIRST_ROW_Y = 38
 const LOUNGE_W = 54
 const WALK_PX_PER_S = 30
 const CHEER_MS = 1600
-const LINGER_MS = 5000
 const DOZE_MS = 30_000
 const WANDER_MS = 9000
 
@@ -407,14 +405,6 @@ const lounge = (plan: Plan) => {
     water: { x: x + 25, y: WALL_H - 7 },
     snacks: { x: x + 4, y: 98 },
     sofa: { x: x + 16, y: SOFA_Y - 5 },
-    seats: [
-      { x: x + 30, y: 98 },
-      { x: x + 6, y: 136 },
-      { x: x + 34, y: 136 },
-      { x: x + 18, y: 116 },
-      { x: x + 4, y: 120 },
-      { x: x + 34, y: 120 },
-    ],
   }
 }
 
@@ -507,7 +497,7 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
 
     if (m.seat >= desks) {
       if (endedAt === null) hidden += 1
-      else if (m.leftAt !== null) gone.push(m.id)
+      else gone.push(m.id)
       continue
     }
 
@@ -539,28 +529,11 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
       continue
     }
 
-    const spot = lounge(plan).seats[m.seat % 6] ?? lounge(plan).sofa
-    const toBreak = route(seat, spot, plan)
-    const going = walk(toBreak, endedAt + CHEER_MS, now)
-    const leavesAt = m.leftAt === null ? null : Math.max(m.leftAt, endedAt + CHEER_MS + pathMs(toBreak) + LINGER_MS)
+    // Done: straight back out the door, freeing the desk.
+    const out = walk(route(seat, DOOR, plan), endedAt + CHEER_MS, now)
 
-    if (leavesAt !== null && now >= leavesAt) {
-      const out = walk(route(spot, DOOR, plan), leavesAt, now)
-
-      if (out.arrived) gone.push(m.id)
-      else actors.push({ ...base, at: out.at, seat: null, mode: 'walking', face: 'calm', status: '', tone: 'quiet' })
-      continue
-    }
-
-    actors.push({
-      ...base,
-      at: going.at,
-      seat: null,
-      mode: going.arrived ? 'standing' : 'walking',
-      face: going.arrived ? (isFailed ? 'dead' : blink(m.seat) === 'blink' ? 'blink' : 'happy') : 'calm',
-      status: going.arrived ? (isFailed ? 'CRASHED' : 'ON BREAK') : '',
-      tone: isFailed ? 'bad' : 'good',
-    })
+    if (out.arrived) gone.push(m.id)
+    else actors.push({ ...base, at: out.at, seat: null, mode: 'walking', face: 'calm', status: '', tone: isFailed ? 'bad' : 'good' })
   }
 
   // Claude: at its desk while it works or leads, else wandering the office.
