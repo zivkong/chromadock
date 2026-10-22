@@ -5,23 +5,34 @@
 // terminal shows crisp pixels. The scene: a night-time wall of windows over a city, a door,
 // an aurora painting and a wall clock with the real time; a carpet of desks where robots sit
 // behind laptops whose lids glow in their colour; and a lounge on warm planks with an
-// espresso machine, a water cooler, a donut table and a sofa, where finished agents rest a
-// moment before they leave. Everything that moves is a pure function of the clock (and of
-// who has a place on the sofa), so a frame can be drawn again at any moment and look the same.
+// espresso machine, a water cooler, a donut table and a sofa, where idle agents take a break.
+// Everything that moves is a pure function of the clock and each robot's walks, so a frame
+// can be drawn again at any moment and look the same.
+
+// Where a robot heads: out the door, to a desk, or to one of the break area's spots.
+export type Place = { kind: 'door' } | { kind: 'desk'; seat: number } | { kind: 'spot'; spot: number }
+
+// One walk, to a place: it sets off at `at`, or once the walk before it has arrived if that
+// is later, so a robot always finishes one walk before the next. The first comes in through
+// the door; a walk out the door starts with a celebration where the robot stands.
+export type Leg = { to: Place; at: number }
+
+// Robots on a break at once; one more idle stays dozing at its desk.
+export const BREAK_SPOTS = 6
 
 export type Crew = {
   id: string
-  seat: number
+  // The robot's own number, for its look; it keeps it from desk to break and back.
+  n: number
   hue: number
   name: string
   status: 'running' | 'done' | 'failed'
-  startedAt: number
-  // When its robot came through the door: its spawn, or the reload that brought it back.
-  enteredAt: number
-  endedAt: number | null
-  goneAt: number | null
+  legs: readonly Leg[]
+  // The desk it holds, if any (none on a break or on its way out).
+  seat: number | null
   lastTool: string | null
-  lastToolAt: number | null
+  // Its last tool call or model step, or its arrival if later: what dozing is timed from.
+  activeAt: number
 }
 
 export type OfficeInput = {
@@ -57,7 +68,6 @@ const LOUNGE_W = 54
 const WALK_PX_PER_S = 30
 const CHEER_MS = 1600
 // How long a finished agent sits on the sofa before it heads for the door.
-const REST_MS = 6000
 const DOZE_MS = 30_000
 const WANDER_MS = 9000
 
@@ -410,8 +420,16 @@ const lounge = (plan: Plan) => {
     water: { x: x + 25, y: WALL_H - 7 },
     snacks: { x: x + 4, y: 98 },
     sofa: { x: x + 19, y: SOFA_Y - 5 },
-    // Either side of Claude's spot, for finished agents taking a breather.
-    sofaEnds: [{ x: x + 5, y: SOFA_Y - 5 }, { x: x + 33, y: SOFA_Y - 5 }],
+    // Where idle agents take their break: either end of the sofa (Claude keeps the middle),
+    // then around the room. BREAK_SPOTS of them.
+    breaks: [
+      { x: x + 5, y: SOFA_Y - 5 },
+      { x: x + 33, y: SOFA_Y - 5 },
+      { x: x + 30, y: 98 },
+      { x: x + 18, y: 116 },
+      { x: x + 6, y: 136 },
+      { x: x + 22, y: 136 },
+    ],
   }
 }
 
@@ -487,54 +505,38 @@ const TOOL_WORD: Record<string, string> = {
 
 const shortName = (name: string): string => name.split(/\s+/).slice(0, 2).join(' ')
 
-// Who rests on the sofa: finished agents in the order they finished, each taking an end
-// that is free when it gets there; with both ends taken it goes straight out instead. A
-// choice once made is kept, so a robot already on its way never jumps when another leaves.
-type Rest = { endedAt: number; end: number; place: Point; path: Point[]; leavesAt: number }
-const rests = new Map<string, Rest>()
+// Where a robot stands now, following its walks; null once it has walked out the door.
+type Stand = { at: Point; walking: boolean; cheering: boolean; place: Place | null }
 
-// In through the door, down the left lane, along the walkway behind the desks.
-const entryOf = (m: Crew, plan: Plan): Point[] => {
-  const seat = seatOf(m.seat, plan)
-
-  return [DOOR, { x: DOOR.x, y: seat.y }, seat]
-}
-
-// When a finished agent's robot starts celebrating: one that finishes on its way in reaches its desk first.
-const doneAt = (m: Crew, plan: Plan): number | null => {
-  const ended = m.endedAt ?? m.goneAt
-
-  return ended === null ? null : Math.max(ended, m.enteredAt + pathMs(entryOf(m, plan)))
-}
-
-function sofaPlaces(input: OfficeInput, plan: Plan): Map<string, Rest> {
+function standOf(m: Crew, now: number, plan: Plan): Stand | null {
   const desks = plan.across * ROWS_OF_DESKS
-  const ends = lounge(plan).sofaEnds
-  const done = input.crew.filter(m => m.seat < desks && doneAt(m, plan) !== null)
-  const present = new Set(done.map(m => m.id))
+  // A desk past the room's last is behind the door, as far as anyone can see.
+  const pointOf = (place: Place): Point =>
+    place.kind === 'desk' && place.seat < desks ? seatOf(place.seat, plan) : place.kind === 'spot' ? (lounge(plan).breaks[place.spot] ?? DOOR) : DOOR
+  let at = DOOR
+  let place: Place | null = null
+  let free = -Infinity
 
-  for (const [id, r] of rests) if (!present.has(id) || done.find(m => m.id === id && doneAt(m, plan) !== r.endedAt)) rests.delete(id)
-  const freeAt = ends.map((_, k) => Math.max(-Infinity, ...[...rests.values()].filter(r => r.end === k).map(r => r.leavesAt)))
-  const fresh = done.filter(m => !rests.has(m.id)).sort((p, q) => (doneAt(p, plan) ?? 0) - (doneAt(q, plan) ?? 0))
+  for (const leg of m.legs) {
+    const start = Math.max(leg.at, free)
 
-  for (const m of fresh) {
-    const endedAt = doneAt(m, plan) ?? 0
-    const from = seatOf(m.seat, plan)
-    const end = ends.findIndex((place, k) => (freeAt[k] ?? Infinity) <= endedAt + CHEER_MS + pathMs(route(from, place, plan)))
-    const place = ends[end]
-    const path = place === undefined ? [] : route(from, place, plan)
-    const leavesAt = endedAt + CHEER_MS + pathMs(path) + REST_MS
+    if (now < start) break
+    const cheer = leg.to.kind === 'door' ? CHEER_MS : 0
 
-    if (place !== undefined) freeAt[end] = leavesAt
-    rests.set(m.id, { endedAt, end, place: place ?? from, path, leavesAt })
+    if (now < start + cheer) return { at, walking: false, cheering: true, place }
+    const to = pointOf(leg.to)
+    // In through the door down the left lane, along the walkway behind the desks; else by walkways and lanes.
+    const path = place === null && leg.to.kind === 'desk' ? [DOOR, { x: DOOR.x, y: to.y }, to] : route(at, to, plan)
+    const going = walk(path, start + cheer, now)
+
+    if (!going.arrived) return { at: going.at, walking: true, cheering: false, place: null }
+    at = to
+    place = leg.to
+    free = start + cheer + pathMs(path)
   }
 
-  return rests
+  return place?.kind === 'door' ? null : { at, walking: false, cheering: false, place }
 }
-
-// Which finished agents rest on the sofa, and on which end (-1: straight out); for tests.
-export const sofaEnds = (input: OfficeInput): Map<string, number> =>
-  new Map([...sofaPlaces(input, planFor(input.cols))].map(([id, r]) => [id, r.end]))
 
 function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]; hidden: number } {
   const { now } = input
@@ -543,34 +545,45 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
   const gone: string[] = []
   let hidden = 0
   const blink = (k: number): Face => (Math.floor(now / 180 + k * 7) % 23 === 0 ? 'blink' : 'calm')
-  const resting = sofaPlaces(input, plan)
 
   for (const m of input.crew) {
-    const look: Look = { hue: m.hue, isClaude: false, kit: (m.seat * 7 + m.hue) % 4 }
-    const seat = seatOf(m.seat, plan)
-    const endedAt = doneAt(m, plan)
+    const look: Look = { hue: m.hue, isClaude: false, kit: (m.n * 7 + m.hue) % 4 }
     const isFailed = m.status === 'failed'
+    const isLeaving = m.legs[m.legs.length - 1]?.to.kind === 'door'
     const base = { key: m.id, look, name: shortName(m.name), typing: false, cheer: false }
+    const stand = standOf(m, now, plan)
 
-    if (m.seat >= desks) {
-      if (endedAt === null) hidden += 1
-      else gone.push(m.id)
+    if (stand === null) {
+      if (isLeaving) gone.push(m.id)
       continue
     }
+    // Not through the door yet.
+    if (stand.place === null && !stand.walking) continue
+    if (m.seat !== null && m.seat >= desks) {
+      hidden += 1
+      continue
+    }
+    const deskSeat = stand.place?.kind === 'desk' && stand.place.seat < desks ? stand.place.seat : null
 
-    if (endedAt === null || now < endedAt) {
-      const going = walk(entryOf(m, plan), m.enteredAt, now)
-
-      if (!going.arrived) {
-        actors.push({ ...base, at: going.at, seat: null, mode: 'walking', face: 'calm', status: '', tone: 'work' })
-        continue
-      }
-      const isDozing = now - Math.max(m.lastToolAt ?? m.startedAt, m.enteredAt) > DOZE_MS
+    if (stand.cheering) {
+      const face: Face = isFailed ? 'dead' : 'happy'
+      const status = isFailed ? 'CRASHED' : 'DONE!'
+      const tone = isFailed ? 'bad' : 'good'
+      if (deskSeat !== null) actors.push({ ...base, at: stand.at, seat: deskSeat, mode: 'seated', face, status, tone, cheer: !isFailed })
+      else actors.push({ ...base, at: stand.at, seat: null, mode: 'standing', face, status, tone })
+      continue
+    }
+    if (stand.walking) {
+      actors.push({ ...base, at: stand.at, seat: null, mode: 'walking', face: 'calm', status: '', tone: isLeaving ? (isFailed ? 'bad' : 'good') : 'work' })
+      continue
+    }
+    if (deskSeat !== null) {
+      const isDozing = now - m.activeAt > DOZE_MS
       const word = m.lastTool === null ? 'STARTING' : (TOOL_WORD[m.lastTool] ?? m.lastTool.toUpperCase())
       actors.push({
         ...base,
-        at: seat,
-        seat: m.seat,
+        at: stand.at,
+        seat: deskSeat,
         mode: 'seated',
         face: isDozing ? 'sleep' : 'focus',
         status: isDozing ? 'ZZZ' : word,
@@ -579,34 +592,8 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
       })
       continue
     }
-
-    if (now - endedAt < CHEER_MS) {
-      actors.push({ ...base, at: seat, seat: m.seat, mode: 'seated', face: isFailed ? 'dead' : 'happy', status: isFailed ? 'CRASHED' : 'DONE!', tone: isFailed ? 'bad' : 'good', cheer: !isFailed })
-      continue
-    }
-
-    // Done: a rest on the sofa when a place is free, then out the door; the desk is free at once.
-    const sofa = resting.get(m.id)
-    const rest = sofa === undefined || sofa.end < 0 ? undefined : sofa
-
-    if (rest !== undefined && now < rest.leavesAt) {
-      const going = walk(rest.path, endedAt + CHEER_MS, now)
-      actors.push({
-        ...base,
-        at: going.at,
-        seat: null,
-        mode: going.arrived ? 'standing' : 'walking',
-        face: going.arrived ? (isFailed ? 'dead' : blink(m.seat) === 'blink' ? 'blink' : 'happy') : 'calm',
-        status: '',
-        tone: isFailed ? 'bad' : 'good',
-      })
-      continue
-    }
-
-    const out = rest === undefined ? walk(route(seat, DOOR, plan), endedAt + CHEER_MS, now) : walk(route(rest.place, DOOR, plan), rest.leavesAt, now)
-
-    if (out.arrived) gone.push(m.id)
-    else actors.push({ ...base, at: out.at, seat: null, mode: 'walking', face: 'calm', status: '', tone: isFailed ? 'bad' : 'good' })
+    // On a break, waiting for its task to call it back; unlabelled, as the lounge is close quarters.
+    actors.push({ ...base, at: stand.at, seat: null, mode: 'standing', face: blink(m.n) === 'blink' ? 'blink' : 'calm', status: '', tone: 'quiet' })
   }
 
   // Claude: at its desk while it works or leads, else wandering the office.

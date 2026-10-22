@@ -29,6 +29,10 @@ export type AgentRow = {
   tools: number
   lastTool: string | null
   lastToolAt: number | null
+  // Its last tool call or model step (absent from a row an older load published).
+  activeAt?: number | null
+  // The engine lists it as parked, waiting for a message or its task.
+  isWaiting?: boolean
 }
 
 export type FlowRow = { runId: string; name: string; startedAt: number; lastSpawnAt: number }

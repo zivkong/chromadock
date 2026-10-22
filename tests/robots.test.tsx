@@ -1,5 +1,4 @@
 import { expect, test } from 'claude-code/testing'
-import { sofaEnds, type Crew } from '../hooks/pixel-office'
 
 const SIDEBAR = {
   plugin: 'aurora',
@@ -222,24 +221,53 @@ test('in Ghostty the office is a pixel-art picture', async ($, on) => {
   await ui.unmount()
 })
 
-test('finished agents rest on the sofa two at a time, and keep their place once taken', () => {
-  const agent = (id: string, seat: number, endedAt: number | null): Crew => ({
-    id, seat, hue: 0, name: id, status: endedAt === null ? 'running' : 'done', startedAt: -100_000, enteredAt: -100_000, endedAt, goneAt: null, lastTool: null, lastToolAt: null,
-  })
-  const office = (crew: Crew[], now: number) => ({ cols: 56, now, isWorking: false, leading: 0, crew, hours: 0, minutes: 0 })
+test('an idle agent gives up its desk for a break, and walks back to a desk when its task goes on', async ($, on) => {
+  let now = 5_000_000
+  on('clock.now', () => ({ value: now }))
+  on('agent.spawn', () => ({ model: 'claude-sonnet-5-5', agentId: 'agent-i' }))
+  on('tool.call', () => ({ result: {} }))
 
-  // Three finish together: the first two take the ends, the third goes straight out.
-  const trio = sofaEnds(office([agent('a', 1, 1000), agent('b', 2, 1000), agent('c', 3, 1000)], 2000))
-  expect([...trio.values()].filter(end => end >= 0).sort()).toEqual([0, 1])
-  expect(trio.get('c')).toBe(-1)
+  await $.agent.spawn({ prompt: 'p', description: 'wait on the build', subagentType: 'general-purpose', parentModel: 'm', workflow: { runId: 'wf_i', agentIndex: 1 } } as never)
+  now += 10_000
+  const seated = await $.ui.mount(SIDEBAR as never)
+  expect((await seated.find({ type: 'Text', text: /Starting/ }))?.text).toContain('… Starting')
+  await seated.unmount()
 
-  // Once 'a' has left the crew, 'b' and 'c' keep what they were given.
-  const later = sofaEnds(office([agent('b', 2, 1000), agent('c', 3, 1000)], 30_000))
-  expect(later.get('b')).toBe(trio.get('b'))
-  expect(later.get('c')).toBe(-1)
+  // A minute with nothing done: it dozes, then sets off for the break area and sits there.
+  now += 70_000
+  await (await $.ui.mount(SIDEBAR as never)).unmount()
+  now += 15_000
+  const resting = await $.ui.mount(SIDEBAR as never)
+  expect(await resting.find({ type: 'Text', text: /^◦$/ })).toBeDefined()
+  expect(await resting.find({ type: 'Text', text: /Dozing|Starting/ })).toBeUndefined()
+  // Still on the roster: a break is not the door.
+  expect((await resting.find({ type: 'Text', text: /wait on the build/ }))?.text).toContain('wait on the build')
+  await resting.unmount()
 
-  // One finishing long after has the sofa free again; one still working is not on it.
-  const fresh = sofaEnds(office([agent('d', 1, 60_000), agent('e', 2, null)], 61_000))
-  expect(fresh.get('d')).toBeGreaterThanOrEqual(0)
-  expect(fresh.has('e')).toBe(false)
+  // Its task goes on: back to a desk, wearing the tool.
+  await $.tool.call({ tool: 'Grep', agentId: 'agent-i', pattern: 'x' } as never)
+  await (await $.ui.mount(SIDEBAR as never)).unmount()
+  now += 15_000
+  const back = await $.ui.mount(SIDEBAR as never)
+  expect((await back.find({ type: 'Text', text: /⌕ Grep/ }))?.text).toContain('⌕ Grep')
+  expect(await back.find({ type: 'Text', text: /^◦$/ })).toBeUndefined()
+  await back.unmount()
+})
+
+test('with every break spot taken, one more idle agent dozes on at its desk', async ($, on) => {
+  let now = 9_000_000
+  let k = 0
+  on('clock.now', () => ({ value: now }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: `agent-b${(k += 1)}` }))
+
+  for (let i = 0; i < 7; i += 1) {
+    await $.agent.spawn({ prompt: 'p', description: `idle ${i}`, subagentType: 'Explore', parentModel: 'm', workflow: { runId: 'wf_b', agentIndex: i + 1 } } as never)
+  }
+  now += 70_000
+  await (await $.ui.mount(SIDEBAR as never)).unmount()
+  now += 20_000
+  const full = await $.ui.mount(SIDEBAR as never)
+  expect(await full.findAll({ type: 'Text', text: /^◦$/ })).toHaveLength(6)
+  expect((await full.find({ type: 'Text', text: /Dozing/ }))?.text).toContain('z Dozing')
+  await full.unmount()
 })
