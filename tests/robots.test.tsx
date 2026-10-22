@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { sofaEnds, type Crew } from '../hooks/pixel-office'
 
 const SIDEBAR = {
   plugin: 'aurora',
@@ -148,4 +149,26 @@ test('in Ghostty the office is a pixel-art picture', async ($, on) => {
   expect(picture).toBeDefined()
   expect(JSON.stringify(picture)).toContain('the office')
   await ui.unmount()
+})
+
+test('finished agents rest on the sofa two at a time, and keep their place once taken', () => {
+  const agent = (id: string, seat: number, endedAt: number | null): Crew => ({
+    id, seat, hue: 0, name: id, status: endedAt === null ? 'running' : 'done', startedAt: 0, endedAt, goneAt: null, lastTool: null, lastToolAt: null,
+  })
+  const office = (crew: Crew[], now: number) => ({ cols: 56, now, isWorking: false, leading: 0, crew, hours: 0, minutes: 0 })
+
+  // Three finish together: the first two take the ends, the third goes straight out.
+  const trio = sofaEnds(office([agent('a', 1, 1000), agent('b', 2, 1000), agent('c', 3, 1000)], 2000))
+  expect([...trio.values()].filter(end => end >= 0).sort()).toEqual([0, 1])
+  expect(trio.get('c')).toBe(-1)
+
+  // Once 'a' has left the crew, 'b' and 'c' keep what they were given.
+  const later = sofaEnds(office([agent('b', 2, 1000), agent('c', 3, 1000)], 30_000))
+  expect(later.get('b')).toBe(trio.get('b'))
+  expect(later.get('c')).toBe(-1)
+
+  // One finishing long after has the sofa free again; one still working is not on it.
+  const fresh = sofaEnds(office([agent('d', 1, 60_000), agent('e', 2, null)], 61_000))
+  expect(fresh.get('d')).toBeGreaterThanOrEqual(0)
+  expect(fresh.has('e')).toBe(false)
 })

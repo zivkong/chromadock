@@ -5,8 +5,9 @@
 // terminal shows crisp pixels. The scene: a night-time wall of windows over a city, a door,
 // an aurora painting and a wall clock with the real time; a carpet of desks where robots sit
 // behind laptops whose lids glow in their colour; and a lounge on warm planks with an
-// espresso machine, a water cooler, a donut table and a sofa. Everything that moves is a pure
-// function of the clock, so a frame can be drawn again at any moment and look the same.
+// espresso machine, a water cooler, a donut table and a sofa, where finished agents rest a
+// moment before they leave. Everything that moves is a pure function of the clock (and of
+// who has a place on the sofa), so a frame can be drawn again at any moment and look the same.
 
 export type Crew = {
   id: string
@@ -53,6 +54,8 @@ const FIRST_ROW_Y = 38
 const LOUNGE_W = 54
 const WALK_PX_PER_S = 30
 const CHEER_MS = 1600
+// How long a finished agent sits on the sofa before it heads for the door.
+const REST_MS = 6000
 const DOZE_MS = 30_000
 const WANDER_MS = 9000
 
@@ -404,7 +407,9 @@ const lounge = (plan: Plan) => {
     coffee: { x: x + 5, y: WALL_H - 9 },
     water: { x: x + 25, y: WALL_H - 7 },
     snacks: { x: x + 4, y: 98 },
-    sofa: { x: x + 16, y: SOFA_Y - 5 },
+    sofa: { x: x + 19, y: SOFA_Y - 5 },
+    // Either side of Claude's spot, for finished agents taking a breather.
+    sofaEnds: [{ x: x + 5, y: SOFA_Y - 5 }, { x: x + 33, y: SOFA_Y - 5 }],
   }
 }
 
@@ -480,6 +485,41 @@ const TOOL_WORD: Record<string, string> = {
 
 const shortName = (name: string): string => name.split(/\s+/).slice(0, 2).join(' ')
 
+// Who rests on the sofa: finished agents in the order they finished, each taking an end
+// that is free when it gets there; with both ends taken it goes straight out instead. A
+// choice once made is kept, so a robot already on its way never jumps when another leaves.
+type Rest = { endedAt: number; end: number; place: Point; path: Point[]; leavesAt: number }
+const rests = new Map<string, Rest>()
+
+function sofaPlaces(input: OfficeInput, plan: Plan): Map<string, Rest> {
+  const desks = plan.across * ROWS_OF_DESKS
+  const ends = lounge(plan).sofaEnds
+  const done = input.crew.filter(m => m.seat < desks && (m.endedAt ?? m.goneAt) !== null)
+  const present = new Set(done.map(m => m.id))
+
+  for (const [id, r] of rests) if (!present.has(id) || done.find(m => m.id === id && (m.endedAt ?? m.goneAt) !== r.endedAt)) rests.delete(id)
+  const freeAt = ends.map((_, k) => Math.max(-Infinity, ...[...rests.values()].filter(r => r.end === k).map(r => r.leavesAt)))
+  const fresh = done.filter(m => !rests.has(m.id)).sort((p, q) => (p.endedAt ?? p.goneAt ?? 0) - (q.endedAt ?? q.goneAt ?? 0))
+
+  for (const m of fresh) {
+    const endedAt = m.endedAt ?? m.goneAt ?? 0
+    const from = seatOf(m.seat, plan)
+    const end = ends.findIndex((place, k) => (freeAt[k] ?? Infinity) <= endedAt + CHEER_MS + pathMs(route(from, place, plan)))
+    const place = ends[end]
+    const path = place === undefined ? [] : route(from, place, plan)
+    const leavesAt = endedAt + CHEER_MS + pathMs(path) + REST_MS
+
+    if (place !== undefined) freeAt[end] = leavesAt
+    rests.set(m.id, { endedAt, end, place: place ?? from, path, leavesAt })
+  }
+
+  return rests
+}
+
+// Which finished agents rest on the sofa, and on which end (-1: straight out); for tests.
+export const sofaEnds = (input: OfficeInput): Map<string, number> =>
+  new Map([...sofaPlaces(input, planFor(input.cols))].map(([id, r]) => [id, r.end]))
+
 function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]; hidden: number } {
   const { now } = input
   const desks = plan.across * ROWS_OF_DESKS
@@ -487,6 +527,7 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
   const gone: string[] = []
   let hidden = 0
   const blink = (k: number): Face => (Math.floor(now / 180 + k * 7) % 23 === 0 ? 'blink' : 'calm')
+  const resting = sofaPlaces(input, plan)
 
   for (const m of input.crew) {
     const look: Look = { hue: m.hue, isClaude: false, kit: (m.seat * 7 + m.hue) % 4 }
@@ -529,8 +570,25 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
       continue
     }
 
-    // Done: straight back out the door, freeing the desk.
-    const out = walk(route(seat, DOOR, plan), endedAt + CHEER_MS, now)
+    // Done: a rest on the sofa when a place is free, then out the door; the desk is free at once.
+    const sofa = resting.get(m.id)
+    const rest = sofa === undefined || sofa.end < 0 ? undefined : sofa
+
+    if (rest !== undefined && now < rest.leavesAt) {
+      const going = walk(rest.path, endedAt + CHEER_MS, now)
+      actors.push({
+        ...base,
+        at: going.at,
+        seat: null,
+        mode: going.arrived ? 'standing' : 'walking',
+        face: going.arrived ? (isFailed ? 'dead' : blink(m.seat) === 'blink' ? 'blink' : 'happy') : 'calm',
+        status: '',
+        tone: isFailed ? 'bad' : 'good',
+      })
+      continue
+    }
+
+    const out = rest === undefined ? walk(route(seat, DOOR, plan), endedAt + CHEER_MS, now) : walk(route(rest.place, DOOR, plan), rest.leavesAt, now)
 
     if (out.arrived) gone.push(m.id)
     else actors.push({ ...base, at: out.at, seat: null, mode: 'walking', face: 'calm', status: '', tone: isFailed ? 'bad' : 'good' })
