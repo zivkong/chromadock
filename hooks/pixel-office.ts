@@ -16,6 +16,8 @@ export type Crew = {
   name: string
   status: 'running' | 'done' | 'failed'
   startedAt: number
+  // When its robot came through the door: its spawn, or the reload that brought it back.
+  enteredAt: number
   endedAt: number | null
   goneAt: number | null
   lastTool: string | null
@@ -491,18 +493,32 @@ const shortName = (name: string): string => name.split(/\s+/).slice(0, 2).join('
 type Rest = { endedAt: number; end: number; place: Point; path: Point[]; leavesAt: number }
 const rests = new Map<string, Rest>()
 
+// In through the door, down the left lane, along the walkway behind the desks.
+const entryOf = (m: Crew, plan: Plan): Point[] => {
+  const seat = seatOf(m.seat, plan)
+
+  return [DOOR, { x: DOOR.x, y: seat.y }, seat]
+}
+
+// When a finished agent's robot starts celebrating: one that finishes on its way in reaches its desk first.
+const doneAt = (m: Crew, plan: Plan): number | null => {
+  const ended = m.endedAt ?? m.goneAt
+
+  return ended === null ? null : Math.max(ended, m.enteredAt + pathMs(entryOf(m, plan)))
+}
+
 function sofaPlaces(input: OfficeInput, plan: Plan): Map<string, Rest> {
   const desks = plan.across * ROWS_OF_DESKS
   const ends = lounge(plan).sofaEnds
-  const done = input.crew.filter(m => m.seat < desks && (m.endedAt ?? m.goneAt) !== null)
+  const done = input.crew.filter(m => m.seat < desks && doneAt(m, plan) !== null)
   const present = new Set(done.map(m => m.id))
 
-  for (const [id, r] of rests) if (!present.has(id) || done.find(m => m.id === id && (m.endedAt ?? m.goneAt) !== r.endedAt)) rests.delete(id)
+  for (const [id, r] of rests) if (!present.has(id) || done.find(m => m.id === id && doneAt(m, plan) !== r.endedAt)) rests.delete(id)
   const freeAt = ends.map((_, k) => Math.max(-Infinity, ...[...rests.values()].filter(r => r.end === k).map(r => r.leavesAt)))
-  const fresh = done.filter(m => !rests.has(m.id)).sort((p, q) => (p.endedAt ?? p.goneAt ?? 0) - (q.endedAt ?? q.goneAt ?? 0))
+  const fresh = done.filter(m => !rests.has(m.id)).sort((p, q) => (doneAt(p, plan) ?? 0) - (doneAt(q, plan) ?? 0))
 
   for (const m of fresh) {
-    const endedAt = m.endedAt ?? m.goneAt ?? 0
+    const endedAt = doneAt(m, plan) ?? 0
     const from = seatOf(m.seat, plan)
     const end = ends.findIndex((place, k) => (freeAt[k] ?? Infinity) <= endedAt + CHEER_MS + pathMs(route(from, place, plan)))
     const place = ends[end]
@@ -532,7 +548,7 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
   for (const m of input.crew) {
     const look: Look = { hue: m.hue, isClaude: false, kit: (m.seat * 7 + m.hue) % 4 }
     const seat = seatOf(m.seat, plan)
-    const endedAt = m.endedAt ?? m.goneAt
+    const endedAt = doneAt(m, plan)
     const isFailed = m.status === 'failed'
     const base = { key: m.id, look, name: shortName(m.name), typing: false, cheer: false }
 
@@ -542,15 +558,14 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
       continue
     }
 
-    if (endedAt === null) {
-      // In through the door, down the left lane, along the walkway behind the desks.
-      const going = walk([DOOR, { x: DOOR.x, y: seat.y }, seat], m.startedAt, now)
+    if (endedAt === null || now < endedAt) {
+      const going = walk(entryOf(m, plan), m.enteredAt, now)
 
       if (!going.arrived) {
         actors.push({ ...base, at: going.at, seat: null, mode: 'walking', face: 'calm', status: '', tone: 'work' })
         continue
       }
-      const isDozing = now - (m.lastToolAt ?? m.startedAt) > DOZE_MS
+      const isDozing = now - Math.max(m.lastToolAt ?? m.startedAt, m.enteredAt) > DOZE_MS
       const word = m.lastTool === null ? 'STARTING' : (TOOL_WORD[m.lastTool] ?? m.lastTool.toUpperCase())
       actors.push({
         ...base,

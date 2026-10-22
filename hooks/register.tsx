@@ -252,7 +252,7 @@ function settle(row: AgentRow, status: 'done' | 'failed', at: number) {
 
 // A reload starts the module over but keeps the session's state: take back the agents and
 // runs the last load published, so their tool calls and finishes are followed again. Their
-// robots come back already seated, having walked in long ago.
+// robots walk back in through the door, as any newcomer does.
 async function restore($: EngineInterface) {
   let isTaken = false
 
@@ -368,7 +368,8 @@ async function startTurn($: EngineInterface) {
 
 type Pose = 'walk' | 'work' | 'doze' | 'idle' | 'cheer' | 'fizzle'
 type Point = { x: number; y: number }
-type Actor = { row: AgentRow; seat: number; fromLeft: boolean; hue: number; goneAt: number | null }
+// `enteredAt`: when it came through the door, which is its spawn, or the reload that brought it back.
+type Actor = { row: AgentRow; seat: number; fromLeft: boolean; hue: number; enteredAt: number; goneAt: number | null }
 type Cell = { ch: string; fg: string; bg: string; bold: boolean }
 type Figure = { key: string; at: Point; pose: Pose; hue: number; status: string; name: string; tone: 'work' | 'good' | 'bad' | 'quiet' }
 
@@ -440,7 +441,7 @@ function syncCast(rows: readonly AgentRow[], now: number) {
     const taken = new Set([...cast.values()].map(a => a.seat))
     let seat = 1
     while (taken.has(seat)) seat += 1
-    cast.set(row.id, { row, seat, fromLeft: hashOf(row.id) % 2 === 0, hue: (seat * 47 + 160) % 360, goneAt: null })
+    cast.set(row.id, { row, seat, fromLeft: hashOf(row.id) % 2 === 0, hue: (seat * 47 + 160) % 360, enteredAt: now, goneAt: null })
   }
 
   for (const actor of cast.values()) {
@@ -546,26 +547,29 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
     const { row, seat, hue } = actor
     const chair = chairOf(seat, plan)
     const base = { key: row.id, hue, name: row.label }
-    const endedAt = row.endedAt ?? actor.goneAt
+    const ended = row.endedAt ?? actor.goneAt
     const isFailed = row.status === 'failed'
 
     if (seat >= desks) {
-      if (endedAt === null) hidden += 1
+      if (ended === null) hidden += 1
       else cast.delete(row.id)
       continue
     }
 
     const door: Point = { x: actor.fromLeft ? -3 : cols, y: aisleNear(chair.y) }
+    const entry = [door, { x: chair.x, y: door.y }, chair]
+    // One that finishes on its way in reaches its desk first, then celebrates there.
+    const endedAt = ended === null ? null : Math.max(ended, actor.enteredAt + pathMs(entry))
 
-    if (endedAt === null) {
-      const going = walk([door, { x: chair.x, y: door.y }, chair], row.startedAt, now)
+    if (endedAt === null || now < endedAt) {
+      const going = walk(entry, actor.enteredAt, now)
 
       if (!going.arrived) {
         figures.push({ ...base, at: going.at, pose: 'walk', status: '', tone: 'work' })
         continue
       }
 
-      const isDozing = now - (row.lastToolAt ?? row.startedAt) > DOZE_MS
+      const isDozing = now - Math.max(row.lastToolAt ?? row.startedAt, actor.enteredAt) > DOZE_MS
       const tool = row.lastTool === null ? '… Starting' : `${TOOL_GLYPH[row.lastTool] ?? '•'} ${row.lastTool}`
       figures.push({ ...base, at: chair, pose: isDozing ? 'doze' : 'work', status: isDozing ? 'z Dozing' : tool, tone: isDozing ? 'quiet' : 'work' })
       continue
@@ -1114,6 +1118,7 @@ export const register: Register = on => {
             name: a.row.label,
             status: a.row.status,
             startedAt: a.row.startedAt,
+            enteredAt: a.enteredAt,
             endedAt: a.row.endedAt,
             goneAt: a.goneAt,
             lastTool: a.row.lastTool,

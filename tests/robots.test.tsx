@@ -121,10 +121,16 @@ test('after a reload the office picks up the agents and workflow already running
   })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
-  // Its robot is back at a desk, and its next tool call is counted.
+  // Its next tool call is counted, and its robot walks back in through the door: no teleport to the desk.
   await $.tool.call({ tool: 'Grep', agentId: 'agent-r', pattern: 'x' } as never)
+  const entering = await $.ui.mount(SIDEBAR as never)
+  expect((await entering.find({ type: 'Text', text: /4 tools · Grep/ }))?.text).toContain('4 tools · Grep')
+  expect(await entering.find({ type: 'Text', text: /⌕ Grep/ })).toBeUndefined()
+  await entering.unmount()
+
+  // Seated once the walk is over, wearing its tool.
+  now += 10_000
   const back = await $.ui.mount(SIDEBAR as never)
-  expect((await back.find({ type: 'Text', text: /4 tools · Grep/ }))?.text).toContain('4 tools · Grep')
   expect((await back.find({ type: 'Text', text: /⌕ Grep/ }))?.text).toContain('⌕ Grep')
   await back.unmount()
 
@@ -133,6 +139,22 @@ test('after a reload the office picks up the agents and workflow already running
   const done = await $.ui.mount(SIDEBAR as never)
   expect((await done.find({ type: 'Text', text: /Done!/ }))?.text).toContain('✓ Done!')
   await done.unmount()
+})
+
+test('an agent that finishes on its way in reaches its desk before it celebrates', async ($, on) => {
+  let now = 3_000_000
+  on('clock.now', () => ({ value: now }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'agent-q' }))
+  on('turn.complete', () => ({ text: '' }))
+
+  await $.agent.spawn({ prompt: 'p', description: 'quick lookup', subagentType: 'Explore', parentModel: 'm' } as never)
+  now += 300
+  await $.turn.complete({ agentId: 'agent-q', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' } as never)
+
+  // Still walking in: no celebration at a desk it has not reached.
+  const walking = await $.ui.mount(SIDEBAR as never)
+  expect(await walking.find({ type: 'Text', text: /Done!/ })).toBeUndefined()
+  await walking.unmount()
 })
 
 test('usage folds to one line, and its toggle opens it', async ($, on) => {
@@ -202,7 +224,7 @@ test('in Ghostty the office is a pixel-art picture', async ($, on) => {
 
 test('finished agents rest on the sofa two at a time, and keep their place once taken', () => {
   const agent = (id: string, seat: number, endedAt: number | null): Crew => ({
-    id, seat, hue: 0, name: id, status: endedAt === null ? 'running' : 'done', startedAt: 0, endedAt, goneAt: null, lastTool: null, lastToolAt: null,
+    id, seat, hue: 0, name: id, status: endedAt === null ? 'running' : 'done', startedAt: -100_000, enteredAt: -100_000, endedAt, goneAt: null, lastTool: null, lastToolAt: null,
   })
   const office = (crew: Crew[], now: number) => ({ cols: 56, now, isWorking: false, leading: 0, crew, hours: 0, minutes: 0 })
 
