@@ -1,11 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 
 const SIDEBAR = {
-  plugin: 'aurora',
+  plugin: 'chromadock',
   component: 'Pane',
-  requestId: 'aurora',
+  requestId: 'chromadock',
   surface: 'terminal',
-  props: { title: 'aurora', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} },
+  props: { title: 'chromadock', isFocused: false, bodyColumns: 56, placement: 'dock', scroll: { offset: 0, bodyRows: 80 }, view: {} },
 } as const
 
 test('at rest the office is quiet and the main robot wanders', async ($, on) => {
@@ -91,7 +91,7 @@ test('after a reload the office picks up the agents and workflow already running
   let now = 2_000_000
   on('clock.now', () => ({ value: now }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: { command: 'aurora' } }))
+  on('command.register', () => ({ value: { command: 'chromadock' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [], startedAt: 900_000 } }))
   on('session.cwd', () => ({ value: '/' }))
@@ -197,7 +197,7 @@ test('a ghost run restored from old state, with nothing heard for half an hour, 
   const now = 20_000_000
   on('clock.now', () => ({ value: now }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: { command: 'aurora' } }))
+  on('command.register', () => ({ value: { command: 'chromadock' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [], startedAt: 900_000 } }))
   on('session.cwd', () => ({ value: '/' }))
@@ -312,7 +312,7 @@ test('a folded usage heading carries the whole summary', async ($, on) => {
   on('clock.now', () => ({ value: 1_000_000 }))
   // A session start with the engine answered: usage carries two capped windows, Fable none.
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: { command: 'aurora' } }))
+  on('command.register', () => ({ value: { command: 'chromadock' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.usage', () => ({
     value: {
@@ -339,7 +339,7 @@ test('a folded usage heading carries the whole summary', async ($, on) => {
 test('in Ghostty the office is a pixel-art picture', async ($, on) => {
   on('clock.now', () => ({ value: 1_000_000 }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: { command: 'aurora' } }))
+  on('command.register', () => ({ value: { command: 'chromadock' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [], startedAt: 900_000 } }))
   on('session.cwd', () => ({ value: '/' }))

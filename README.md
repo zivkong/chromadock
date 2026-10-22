@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="chromadock — the aurora sidebar for Claude Code" width="100%">
+  <img src="assets/banner.svg" alt="chromadock — a rainbow sidebar for Claude Code" width="100%">
 </p>
 
 <p align="center">
@@ -30,7 +30,7 @@
 <table align="center">
   <tr>
     <td width="460" valign="top">
-      <img src="assets/sidebar.png" alt="The aurora sidebar mid-workflow: header, context bar, usage meters, spend by model, the office whiteboard, the pixel-art office, the roster of agents and the ultracode panel" width="460">
+      <img src="assets/sidebar.png" alt="The chromadock sidebar mid-workflow: header, context bar, usage meters, spend by model, the office whiteboard, the pixel-art office, the roster of agents and the ultracode panel" width="460">
     </td>
     <td valign="top">
 
@@ -96,7 +96,7 @@ In terminals that draw pictures (**Ghostty, kitty, iTerm2, WezTerm**; not inside
 At the prompt of a Claude Code terminal session:
 
 ```text
-/plugin install aurora --marketplace zivkong/chromadock
+/plugin install chromadock --marketplace zivkong/chromadock
 ```
 
 Answer `y` to add the marketplace, then press <kbd>Enter</kbd> for the user scope. The sidebar opens in every session from then on.
@@ -107,7 +107,7 @@ Answer `y` to add the marketplace, then press <kbd>Enter</kbd> for the user scop
 <br>
 
 ```sh
-claude plugin install aurora --marketplace zivkong/chromadock
+claude plugin install chromadock --marketplace zivkong/chromadock
 ```
 
 In the desktop app, where `/plugin` does not run: click **+** next to the prompt box → **Plugins** → **Add marketplace** with `zivkong/chromadock` → **Add plugin**.
@@ -119,7 +119,7 @@ In the desktop app, where `/plugin` does not run: click **+** next to the prompt
 | | |
 | :-- | :-- |
 | **Where it lives** | Docked on the right in Claude Code's **fullscreen** mode, 56 columns wide (room for three desks across in the office; a narrower dock fits fewer). A width you drag the dock to wins. |
-| **Opening it** | Opens by itself on a terminal of 144 columns or more. Anywhere else, type `/aurora`. |
+| **Opening it** | Opens by itself on a terminal of 144 columns or more. Anywhere else, type `/chromadock`. |
 | **Folding** | ▸ next to **Usage** or **Spend**, or <kbd>u</kbd> / <kbd>s</kbd> while the sidebar has focus. Remembered across sessions. |
 | **Motion** | Colours drift and spinners turn only while something runs. At rest the sidebar holds perfectly still. |
 
@@ -144,7 +144,7 @@ chromadock is a single hooks module with no dependencies beyond the Claude Code 
 | `scripts/month-spend.py` | Sums the month's spend from `~/.claude/projects`. It remembers where it stopped in each transcript, so after the first run it reads only new lines (milliseconds). |
 | `scripts/session-title.py` | Reads the session's title: a name from `/rename` wins over the generated one. |
 
-Nothing leaves your machine: every figure comes from Claude Code itself or from files already on your disk. Progress for the spend scan is kept in `~/.cache/aurora/month-spend.json`.
+Nothing leaves your machine: every figure comes from Claude Code itself or from files already on your disk. Progress for the spend scan is kept in `~/.cache/chromadock/month-spend.json`.
 
 **Requirements:** Claude Code with mod support in fullscreen mode, and `python3` and `git` on your `PATH`.
 

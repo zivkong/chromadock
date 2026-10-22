@@ -28,7 +28,7 @@ import sys
 from datetime import datetime
 
 PROJECTS = os.path.expanduser("~/.claude/projects")
-CACHE = os.path.expanduser("~/.cache/aurora/month-spend.json")
+CACHE = os.path.expanduser("~/.cache/chromadock/month-spend.json")
 # Bumped whenever a cached entry's shape changes: an older entry is rescanned from the start.
 CACHE_VERSION = 2
 TIMESTAMP = re.compile(rb'"timestamp":"([^"]+)"')

@@ -1,10 +1,10 @@
 {
   "name": "chromadock",
-  "description": "Aurora — a slim, rainbow-tinted sidebar for Claude Code.",
+  "description": "chromadock — a slim, rainbow-tinted sidebar for Claude Code.",
   "owner": { "name": "Ziv Kong", "url": "https://github.com/zivkong" },
   "plugins": [
     {
-      "name": "aurora",
+      "name": "chromadock",
       "source": "./",
       "description": "Sidebar: project, branch/worktree, session, 5h / week / Fable limits, context, monthly spend by model, ultracode; workflows and subagents as an office of robots.",
       "version": "1.12.0"

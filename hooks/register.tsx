@@ -4,30 +4,30 @@ import type { EngineInterface, ModelUsage, Register, RenderChildren, SessionCont
 import type { AgentRow, FlowRow, FlowSummary, Git, Limit, Meter, MonthSpend } from '../types'
 import { BREAK_SPOTS, drawOffice, heatOf, type Leg, type Place } from './pixel-office'
 
-const meter = atom({ plugin: 'aurora', key: 'meter' } as const, null)
-const git = atom({ plugin: 'aurora', key: 'git' } as const, null)
-const frame = atom({ plugin: 'aurora', key: 'frame' } as const, 0)
+const meter = atom({ plugin: 'chromadock', key: 'meter' } as const, null)
+const git = atom({ plugin: 'chromadock', key: 'git' } as const, null)
+const frame = atom({ plugin: 'chromadock', key: 'frame' } as const, 0)
 // The robots' own clock, so the band and the hint line animate without redrawing the sidebar.
-const beat = atom({ plugin: 'aurora', key: 'beat' } as const, 0)
-const model = atom({ plugin: 'aurora', key: 'model' } as const, '')
-const effort = atom({ plugin: 'aurora', key: 'effort' } as const, null)
-const agents = atom({ plugin: 'aurora', key: 'agents' } as const, [])
-const flows = atom({ plugin: 'aurora', key: 'flows' } as const, [])
-const lastFlow = atom({ plugin: 'aurora', key: 'lastFlow' } as const, null)
-const turn = atom({ plugin: 'aurora', key: 'turn' } as const, null)
-const sessionStart = atom({ plugin: 'aurora', key: 'sessionStart' } as const, 0)
-const monthSpend = atom({ plugin: 'aurora', key: 'monthSpend' } as const, null)
-const session = atom({ plugin: 'aurora', key: 'session' } as const, null)
+const beat = atom({ plugin: 'chromadock', key: 'beat' } as const, 0)
+const model = atom({ plugin: 'chromadock', key: 'model' } as const, '')
+const effort = atom({ plugin: 'chromadock', key: 'effort' } as const, null)
+const agents = atom({ plugin: 'chromadock', key: 'agents' } as const, [])
+const flows = atom({ plugin: 'chromadock', key: 'flows' } as const, [])
+const lastFlow = atom({ plugin: 'chromadock', key: 'lastFlow' } as const, null)
+const turn = atom({ plugin: 'chromadock', key: 'turn' } as const, null)
+const sessionStart = atom({ plugin: 'chromadock', key: 'sessionStart' } as const, 0)
+const monthSpend = atom({ plugin: 'chromadock', key: 'monthSpend' } as const, null)
+const session = atom({ plugin: 'chromadock', key: 'session' } as const, null)
 // Whether the spend section is open; kept in $.store so the choice outlives the session.
-const spendOpen = atom({ plugin: 'aurora', key: 'spendOpen' } as const, false)
+const spendOpen = atom({ plugin: 'chromadock', key: 'spendOpen' } as const, false)
 const SPEND_OPEN_KEY = 'spendOpen'
 // Whether the usage section is open, kept the same way.
-const usageOpen = atom({ plugin: 'aurora', key: 'usageOpen' } as const, false)
+const usageOpen = atom({ plugin: 'chromadock', key: 'usageOpen' } as const, false)
 const USAGE_OPEN_KEY = 'usageOpen'
 // Whether this terminal draws pictures, so the office is pixel art rather than text.
-const officeArt = atom({ plugin: 'aurora', key: 'officeArt' } as const, false)
+const officeArt = atom({ plugin: 'chromadock', key: 'officeArt' } as const, false)
 
-const PANE = 'aurora'
+const PANE = 'chromadock'
 // The sidebar asks the dock for this many columns; a width the person drags wins.
 const PANE_COLUMNS = 56
 
@@ -47,7 +47,7 @@ const MONTH_TICKS = Math.round(300_000 / TICK_MS)
 const STAGE_TICKS = 2
 const STROLL_TICKS = 3
 
-// Palette from the Aurora Sidebar design: calm text, pastel rainbow.
+// Palette from the chromadock sidebar design: calm text, pastel rainbow.
 const TEXT = '#d4d4d8'
 const BRIGHT = '#f4f4f5'
 const MUTED = '#8b8b94'
@@ -965,8 +965,8 @@ async function drawsPictures($: EngineInterface): Promise<boolean> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    await $.command.register({ name: 'aurora', description: 'Open the aurora sidebar' })
-    void $.ui.open({ id: PANE, title: 'aurora', columns: PANE_COLUMNS })
+    await $.command.register({ name: 'chromadock', description: 'Open the chromadock sidebar' })
+    void $.ui.open({ id: PANE, title: 'chromadock', columns: PANE_COLUMNS })
 
     const usage = await $.session.usage()
     await update($, meter, () => toMeter(usage.context, usage.rateLimits, usage.cost))
@@ -997,10 +997,10 @@ export const register: Register = on => {
     return started
   })
 
-  on('command.run', { command: 'aurora' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'aurora', columns: PANE_COLUMNS })
+  on('command.run', { command: 'chromadock' }, async $ => {
+    await $.ui.open({ id: PANE, title: 'chromadock', columns: PANE_COLUMNS })
 
-    return { text: 'aurora sidebar opened.' }
+    return { text: 'chromadock sidebar opened.' }
   })
 
   on('session.measure', async ($, e, next) => {

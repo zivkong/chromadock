@@ -55,7 +55,7 @@ export type Turn = { startedAt: number; endedAt: number | null; tools: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    aurora: {
+    chromadock: {
       meter: Meter | null
       git: Git | null
       frame: number

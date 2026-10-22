@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340" role="img" aria-labelledby="title desc">
   <title id="title">chromadock</title>
-  <desc id="desc">The aurora sidebar for Claude Code: a wordmark in drifting rainbow light over a night sky.</desc>
+  <desc id="desc">The chromadock sidebar for Claude Code: a wordmark in drifting rainbow light over a night sky.</desc>
   <defs>
     <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#07070b"/>
@@ -70,6 +70,6 @@
 
     <rect x="390" y="208" width="420" height="2" rx="1" fill="url(#hair)"/>
 
-    <text x="600" y="250" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="19" fill="#a1a1aa" letter-spacing="1.5">the aurora sidebar for claude code</text>
+    <text x="600" y="250" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="19" fill="#a1a1aa" letter-spacing="1.5">a rainbow sidebar for claude code</text>
   </g>
 </svg>

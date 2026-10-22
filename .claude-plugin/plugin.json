@@ -1,7 +1,7 @@
 {
-  "name": "aurora",
+  "name": "chromadock",
   "version": "1.12.0",
-  "description": "Aurora sidebar: project, branch/worktree, 5h / week / Fable limits, context, ultracode; workflows and subagents as an office of robots.",
+  "description": "chromadock sidebar: project, branch/worktree, 5h / week / Fable limits, context, ultracode; workflows and subagents as an office of robots.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Ziv Kong"
