@@ -33,6 +33,8 @@ export type AgentRow = {
   activeAt?: number | null
   // The engine lists it as parked, waiting for a message or its task.
   isWaiting?: boolean
+  // The size of its latest model request, as /workflows counts an agent's tokens.
+  tokens?: number
 }
 
 export type FlowRow = {
@@ -45,7 +47,7 @@ export type FlowRow = {
   toolUseId?: string
 }
 
-export type FlowSummary = { name: string; done: number; total: number; failed: number; ms: number }
+export type FlowSummary = { name: string; done: number; total: number; failed: number; ms: number; tokens?: number }
 
 export type MonthSpend = { month: string; usd: number; sessions: number; models: Record<string, number> }
 

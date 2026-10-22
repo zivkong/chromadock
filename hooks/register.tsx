@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren, SessionContextUsage, SessionCost, SessionRateLimit } from 'claude-code'
+import type { EngineInterface, ModelUsage, Register, RenderChildren, SessionContextUsage, SessionCost, SessionRateLimit } from 'claude-code'
 
 import type { AgentRow, FlowRow, FlowSummary, Git, Limit, Meter, MonthSpend } from '../types'
-import { BREAK_SPOTS, drawOffice, type Leg, type Place } from './pixel-office'
+import { BREAK_SPOTS, drawOffice, heatOf, type Leg, type Place } from './pixel-office'
 
 const meter = atom({ plugin: 'aurora', key: 'meter' } as const, null)
 const git = atom({ plugin: 'aurora', key: 'git' } as const, null)
@@ -229,6 +229,13 @@ async function refreshSession($: EngineInterface) {
   await update($, session, () => ({ id, title }))
 }
 
+// Token counts in a few characters: 940, 156k, 1.2M.
+const tok = (n: number): string => (n < 1000 ? `${n}` : n < 999_500 ? `${Math.round(n / 1000)}k` : `${(n / 1e6).toFixed(1)}M`)
+
+// How hot a robot runs on tokens, by the size of its latest request: 0 cool, 1 from 100k, 2
+// from 250k, 3 from 500k. The roster's count takes the tier's ink; the robot glows (see robot()).
+const HEAT_INK = ['#8b8b94', '#fcd34d', '#fb923c', '#f472b6'] as const
+
 const money = (usd: number): string =>
   `$${usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -323,6 +330,7 @@ async function closeRun($: EngineInterface, run: FlowRow, now: number) {
     total: members.length,
     failed: members.filter(a => a.status === 'failed').length,
     ms: ended - run.startedAt,
+    tokens: members.reduce((sum, a) => sum + (a.tokens ?? 0), 0),
   }
   await update($, lastFlow, () => summary)
   for (const a of members) live.delete(a.id)
@@ -400,6 +408,27 @@ function revive(row: AgentRow) {
   if (cast.get(row.id)?.legs.at(-1)?.to.kind === 'door') cast.delete(row.id)
 }
 
+// An agent's tokens as /workflows counts them: the size of its latest request (input, cache
+// read and written, and output), so a workflow's are the sum of its agents'.
+async function countTokens($: EngineInterface, agentId: string, usage: ModelUsage) {
+  const row = live.get(agentId)
+
+  if (row === undefined) return
+  row.tokens = usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens + usage.output_tokens
+  await publish($)
+}
+
+// Dismissed from the board (a run whose end never reached the mod): it closes as if it had ended.
+async function dismissRun($: EngineInterface, runId: string) {
+  const run = runs.get(runId)
+
+  if (run === undefined) return
+  const now = await $.clock.now()
+  for (const a of [...live.values()]) if (a.runId === runId) settle(a, 'done', now)
+  await closeRun($, run, now)
+  await publish($)
+}
+
 // A model step counts as activity, so an agent thinking hard is not sent on a break.
 async function touch($: EngineInterface, agentId: string) {
   const row = live.get(agentId)
@@ -463,7 +492,7 @@ type Actor = {
   spot: number | null
 }
 type Cell = { ch: string; fg: string; bg: string; bold: boolean }
-type Figure = { key: string; at: Point; pose: Pose; hue: number; status: string; name: string; tone: 'work' | 'good' | 'bad' | 'quiet' }
+type Figure = { key: string; at: Point; pose: Pose; hue: number; status: string; name: string; tone: 'work' | 'good' | 'bad' | 'quiet'; heat?: 0 | 1 | 2 | 3 }
 
 const FACE_INK = '#18181b'
 // The room: a wall, the office carpet with its faint grid, the break area's own carpet.
@@ -737,7 +766,7 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
 
   for (const actor of cast.values()) {
     const { row, hue } = actor
-    const base = { key: row.id, hue, name: row.label }
+    const base = { key: row.id, hue, name: row.label, heat: heatOf(row.tokens ?? 0) }
     const isFailed = row.status === 'failed'
     const isLeaving = actor.legs[actor.legs.length - 1]?.to.kind === 'door'
     const stand = standOf(actor, now, cols, plan)
@@ -773,9 +802,9 @@ function workers(now: number, cols: number): { figures: Figure[]; hidden: number
 }
 
 // The main robot: at its desk while Claude works or leads agents, wandering at rest.
-function mainRobot(now: number, cols: number, isBusy: boolean, leading: number): Figure {
+function mainRobot(now: number, cols: number, isBusy: boolean, leading: number, tokens: number): Figure {
   const plan = planFor(cols)
-  const base = { key: 'main', hue: 330, name: 'Claude', tone: 'work' as const }
+  const base = { key: 'main', hue: 330, name: 'Claude', tone: 'work' as const, heat: heatOf(tokens) }
 
   if (isBusy || leading > 0) {
     return { ...base, at: chairOf(0, plan), pose: 'work', status: leading > 0 ? `☰ Leading ${leading}` : '✎ Working' }
@@ -849,6 +878,20 @@ const faceOf = (pose: Pose, b: number): string => {
 // Seated or standing it wears its status as a pill and its name beneath; walking it wears neither.
 function robot(grid: Cell[][], f: Figure, b: number) {
   const body = hsl(f.hue, 0.7, 0.72)
+  const heat = f.heat ?? 0
+
+  // Running hot on tokens: the floor around it takes its colour, deeper by tier, pulsing at the
+  // top tier with a twinkle over its head.
+  if (heat > 0) {
+    const light = heat === 1 ? 0.2 : heat === 2 ? 0.27 : b % 4 < 2 ? 0.3 : 0.38
+    for (const y of [f.at.y, f.at.y + 1]) {
+      for (let x = f.at.x - 1; x <= f.at.x + 3; x += 1) {
+        const cell = grid[y]?.[x]
+        if (cell !== undefined) cell.bg = hsl(f.hue, 0.6, light)
+      }
+    }
+    if (heat === 3) paint(grid, { x: f.at.x + 1 + (b % 3) - 1, y: f.at.y - 1 }, b % 2 === 0 ? '✦' : '✧', hsl(f.hue + b * 40, 0.9, 0.8))
+  }
   paint(grid, f.at, f.pose === 'walk' && b % 2 === 1 ? '▗▄▖' : '▄▄▄', body)
   paint(grid, { x: f.at.x, y: f.at.y + 1 }, faceOf(f.pose, b), FACE_INK, body)
 
@@ -984,7 +1027,10 @@ export const register: Register = on => {
       await touch($, e.agentId).catch(() => undefined)
     }
 
-    return yield* next(e)
+    const done = yield* next(e)
+    if (e.agentId !== undefined && done.usage !== null) await countTokens($, e.agentId, done.usage).catch(() => undefined)
+
+    return done
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -1273,17 +1319,25 @@ export const register: Register = on => {
       const done = g.members.filter(a => a.status === 'done').length
       const failed = g.members.filter(a => a.status === 'failed').length
       const running = g.members.length - done - failed
-      const tail = `✓${done} ⟳${running} ✗${failed} ${clock(now - g.startedAt)}`
+      const tokens = g.members.reduce((sum, a) => sum + (a.tokens ?? 0), 0)
+      const isRun = g.key !== 'loose'
+      // A run's line ends in a × that dismisses it, for one whose end never reached the mod.
+      const tail = `✓${done} ⟳${running} ✗${failed} ${tok(tokens)} ${clock(now - g.startedAt)}${isRun ? ' ×' : ''}`
 
       return [
         <Box key={`bd-${g.key}`} flexDirection="row" justifyContent="space-between" width={BOARD}>
           <Text color={BRIGHT} bold wrap="truncate-end">{fit(g.name, Math.max(6, BOARD - tail.length - 1))}</Text>
-          <Text>
-            <Text color={GOOD}>✓{done}</Text>
-            <Text color={hsl(215)}> ⟳{running}</Text>
-            <Text color={failed > 0 ? BAD : MUTED}> ✗{failed}</Text>
-            <Text color={MUTED}> {clock(now - g.startedAt)}</Text>
-          </Text>
+          <Box flexDirection="row">
+            <Text>
+              <Text color={GOOD}>✓{done}</Text>
+              <Text color={hsl(215)}> ⟳{running}</Text>
+              <Text color={failed > 0 ? BAD : MUTED}> ✗{failed}</Text>
+              <Text color={HEAT_INK[heatOf(tokens)]}> {tok(tokens)}</Text>
+              <Text color={MUTED}> {clock(now - g.startedAt)}</Text>
+            </Text>
+            {isRun && <Text> </Text>}
+            {isRun && <Button key={`bd-x-${g.key}`} plain label="×" onPress={() => dismissRun($, g.key)} />}
+          </Box>
         </Box>,
         <Text key={`bb-${g.key}`}>{gauge(g.members.length === 0 ? 0 : ((done + failed) / g.members.length) * 100, BOARD, i => (i / BOARD) * 300 + sway, `bm-${g.key}`)}</Text>,
       ]
@@ -1298,6 +1352,7 @@ export const register: Register = on => {
           now,
           isWorking,
           leading: atWork,
+          claudeTokens: m?.tokens ?? 0,
           crew: [...cast.values()].map(a => ({
             id: a.row.id,
             n: a.n,
@@ -1308,6 +1363,7 @@ export const register: Register = on => {
             seat: a.seat,
             lastTool: a.row.lastTool,
             activeAt: activeAt(a),
+            tokens: a.row.tokens ?? 0,
           })),
           hours: new Date(now).getHours(),
           minutes: new Date(now).getMinutes(),
@@ -1317,7 +1373,7 @@ export const register: Register = on => {
     // Text-cell room: furniture first, then every robot (the main one last, on top), each with its labels.
     const { figures, hidden: textHidden } = art === null ? workers(now, ROOM) : { figures: [], hidden: 0 }
     const hidden = art?.hidden ?? textHidden
-    const boss = mainRobot(now, ROOM, isWorking, atWork)
+    const boss = mainRobot(now, ROOM, isWorking, atWork, m?.tokens ?? 0)
     const lit = new Map<number, number>()
     if (boss.pose === 'work') lit.set(0, boss.hue)
     for (const actor of cast.values()) {
@@ -1366,6 +1422,7 @@ export const register: Register = on => {
       const dot = a.status === 'done' ? '✓' : a.status === 'failed' ? '✗' : '●'
       const dotColor = a.status === 'done' ? GOOD : a.status === 'failed' ? BAD : hsl(hue, 0.7, 0.74)
       const stats = `${familyOf(a.model)} ${clock(elapsed)} · ${a.tools} tool${a.tools === 1 ? '' : 's'}${a.lastTool === null || isOver ? '' : ` · ${a.lastTool}`}`
+      const heat = heatOf(a.tokens ?? 0)
 
       return (
         <Box key={`ro-${a.id}`} flexDirection="column" width={W} marginBottom={1}>
@@ -1377,6 +1434,7 @@ export const register: Register = on => {
             {'  '}
             {gauge(pct, 8, () => (a.status === 'failed' ? 0 : hue), `rb-${a.id}`)}
             <Text color={isOver ? MUTED : hsl(hue, 0.5, 0.8)}>{` ${stats}`}</Text>
+            {(a.tokens ?? 0) > 0 && <Text color={isOver ? MUTED : HEAT_INK[heat]} bold={heat === 3}>{` · ${tok(a.tokens ?? 0)} tok`}</Text>}
           </Text>
         </Box>
       )

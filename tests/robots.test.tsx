@@ -229,6 +229,46 @@ test('a ghost run restored from old state, with nothing heard for half an hour, 
   await ui.unmount()
 })
 
+test('each agent shows its tokens, its workflow their sum, and a stale run can be dismissed', async ($, on) => {
+  let now = 30_000_000
+  let k = 0
+  on('clock.now', () => ({ value: now }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: `agent-t${(k += 1)}` }))
+  // A model step that read 150k of cached context and wrote a little.
+  let usage = { input_tokens: 200, output_tokens: 1_800, cache_read_input_tokens: 150_000, cache_creation_input_tokens: 4_000, model: 'claude-opus-5-5' }
+  on('turn.step', async function* () {
+    return { turnId: 't', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', usage }
+  } as never)
+  const step = async (agentId: string) => {
+    const stream = $.turn.step({ turnId: 't', index: 0, agentId, model: 'claude-opus-5-5' } as never)
+    for await (const _ of stream) void _
+  }
+
+  const spawn = (description: string, i: number) =>
+    $.agent.spawn({ tool_use_id: 'toolu_tok', prompt: 'p', description, subagentType: 'general-purpose', parentModel: 'm', workflow: { runId: 'wf_tok', agentIndex: i } } as never)
+  await spawn('build #401', 1)
+  await spawn('review #401', 2)
+  await step('agent-t1')
+  usage = { ...usage, cache_read_input_tokens: 40_000 }
+  await step('agent-t2')
+
+  now += 10_000
+  const ui = await $.ui.mount(SIDEBAR as never)
+  // 200 + 1,800 + 150,000 + 4,000: the size of its latest request, as /workflows counts it.
+  expect((await ui.find({ type: 'Text', text: /156k tok/ }))?.text).toContain('156k tok')
+  expect((await ui.find({ type: 'Text', text: /46k tok/ }))?.text).toContain('46k tok')
+  // The board line: the run's total.
+  expect((await ui.find({ type: 'Text', text: /202k/ }))?.text).toContain('202k')
+
+  // Dismissed from the board: the run and its agents are gone.
+  await ui.press({ key: 'bd-x-wf_tok' } as never)
+  await ui.unmount()
+  const after = await $.ui.mount(SIDEBAR as never)
+  expect(await after.find({ type: 'Text', text: /202k/ })).toBeUndefined()
+  expect(await after.find({ type: 'Text', text: /● build #401/ })).toBeUndefined()
+  await after.unmount()
+})
+
 test('usage folds to one line, and its toggle opens it', async ($, on) => {
   on('clock.now', () => ({ value: 1_000_000 }))
   on('store.set', () => ({ value: undefined }))

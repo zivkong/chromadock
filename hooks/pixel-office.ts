@@ -20,6 +20,9 @@ export type Leg = { to: Place; at: number }
 // Robots on a break at once; one more idle stays dozing at its desk.
 export const BREAK_SPOTS = 6
 
+// How hot a robot runs on tokens (its latest request's size): 0 cool, then 100k, 250k, 500k.
+export const heatOf = (tokens: number): 0 | 1 | 2 | 3 => (tokens >= 500_000 ? 3 : tokens >= 250_000 ? 2 : tokens >= 100_000 ? 1 : 0)
+
 export type Crew = {
   id: string
   // The robot's own number, for its look; it keeps it from desk to break and back.
@@ -33,6 +36,8 @@ export type Crew = {
   lastTool: string | null
   // Its last tool call or model step, or its arrival if later: what dozing is timed from.
   activeAt: number
+  // The size of its latest model request, for its glow.
+  tokens: number
 }
 
 export type OfficeInput = {
@@ -40,6 +45,8 @@ export type OfficeInput = {
   now: number
   isWorking: boolean
   leading: number
+  // The main session's context size, for Claude's own glow.
+  claudeTokens: number
   crew: readonly Crew[]
   // The person's wall-clock time, for the clock on the wall.
   hours: number
@@ -197,6 +204,28 @@ function glow(c: Canvas, cx: number, cy: number, rx: number, ry: number, rgb: RG
       const d = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2
 
       if (d < 1) blend(c, x, y, rgb, strength * (1 - d))
+    }
+  }
+}
+
+// A robot running hot on tokens glows in its own colour behind it: softly from 100k, strongly
+// from 250k, and from 500k a pulsing glow with sparks circling its head.
+function halo(c: Canvas, a: Actor, now: number) {
+  const heat = a.heat ?? 0
+
+  if (heat === 0) return
+  const rgb = a.look.isClaude ? C.claude : hslRgb(a.look.hue, 0.9, 0.62)
+  const cx = a.at.x + 7
+  const cy = a.at.y + 8
+  const pulse = 0.5 + 0.5 * Math.sin(now / 260)
+
+  if (heat === 1) glow(c, cx, cy, 10, 9, rgb, 0.22)
+  if (heat === 2) glow(c, cx, cy, 13, 11, rgb, 0.36)
+  if (heat === 3) {
+    glow(c, cx, cy, 15 + pulse * 2, 13 + pulse * 2, rgb, 0.3 + 0.2 * pulse)
+    for (let k = 0; k < 5; k += 1) {
+      const turn = now / 420 + k * ((Math.PI * 2) / 5)
+      set(c, Math.round(cx + Math.cos(turn) * 12), Math.round(cy - 3 + Math.sin(turn) * 7), hslRgb(a.look.hue + k * 30, 1, 0.78))
     }
   }
 }
@@ -496,6 +525,8 @@ type Actor = {
   name: string
   typing: boolean
   cheer: boolean
+  // How hot it runs on tokens (heatOf), for its glow.
+  heat?: 0 | 1 | 2 | 3
 }
 
 const TOOL_WORD: Record<string, string> = {
@@ -550,7 +581,7 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
     const look: Look = { hue: m.hue, isClaude: false, kit: (m.n * 7 + m.hue) % 4 }
     const isFailed = m.status === 'failed'
     const isLeaving = m.legs[m.legs.length - 1]?.to.kind === 'door'
-    const base = { key: m.id, look, name: shortName(m.name), typing: false, cheer: false }
+    const base = { key: m.id, look, name: shortName(m.name), typing: false, cheer: false, heat: heatOf(m.tokens) }
     const stand = standOf(m, now, plan)
 
     if (stand === null) {
@@ -598,7 +629,7 @@ function cast(input: OfficeInput, plan: Plan): { actors: Actor[]; gone: string[]
 
   // Claude: at its desk while it works or leads, else wandering the office.
   const look: Look = { hue: 18, isClaude: true, kit: 0 }
-  const claude = { key: 'claude', look, name: 'CLAUDE', typing: false, cheer: false }
+  const claude = { key: 'claude', look, name: 'CLAUDE', typing: false, cheer: false, heat: heatOf(input.claudeTokens) }
 
   if (input.isWorking || input.leading > 0) {
     actors.push({ ...claude, at: seatOf(0, plan), seat: 0, mode: 'seated', face: 'focus', status: input.leading > 0 ? `LEADING ${input.leading}` : 'WORKING', tone: 'work', typing: true })
@@ -974,6 +1005,7 @@ export function drawOffice(input: OfficeInput): OfficeFrame {
         paintChair(c, seat, plan)
         if (who !== undefined) {
           const bob = who.cheer && Math.floor(now / 200) % 2 === 0 ? -2 : 0
+          halo(c, who, now)
           robot(c, who.at.x, who.at.y, who.look, who.face === 'focus' && Math.floor(now / 180 + seat * 5) % 31 === 0 ? 'blink' : who.face, null, who.typing, bob)
           if (who.cheer) {
             for (let k = 0; k < 6; k += 1) {
@@ -996,7 +1028,13 @@ export function drawOffice(input: OfficeInput): OfficeFrame {
   for (const a of actors) {
     if (a.mode === 'seated') continue
     const step = a.mode === 'walking' ? (Math.floor(now / 160) % 2 === 0 ? 'stepA' : 'stepB') : 'stand'
-    drawables.push({ y: a.at.y + 15, paint: () => robot(c, a.at.x, a.at.y, a.look, a.face, step, a.mode !== 'walking', a.mode === 'walking' && step === 'stepB' ? -1 : 0) })
+    drawables.push({
+      y: a.at.y + 15,
+      paint: () => {
+        halo(c, a, now)
+        robot(c, a.at.x, a.at.y, a.look, a.face, step, a.mode !== 'walking', a.mode === 'walking' && step === 'stepB' ? -1 : 0)
+      },
+    })
   }
   drawables.sort((p, q) => p.y - q.y)
   for (const d of drawables) d.paint()
