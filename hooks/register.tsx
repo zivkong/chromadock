@@ -1421,8 +1421,14 @@ export const register: Register = on => {
       const pct = isOver ? 100 : mean === null ? null : Math.min(95, (elapsed / mean) * 100)
       const dot = a.status === 'done' ? '✓' : a.status === 'failed' ? '✗' : '●'
       const dotColor = a.status === 'done' ? GOOD : a.status === 'failed' ? BAD : hsl(hue, 0.7, 0.74)
-      const stats = `${familyOf(a.model)} ${clock(elapsed)} · ${a.tools} tool${a.tools === 1 ? '' : 's'}${a.lastTool === null || isOver ? '' : ` · ${a.lastTool}`}`
+      // Model and time, tokens, tool count, then the last tool, cut to what is left of the line:
+      // a long tool name (an MCP tool's) never pushes the rest off it, so nothing jumps.
       const heat = heatOf(a.tokens ?? 0)
+      const lead = `${familyOf(a.model)} ${clock(elapsed)}`
+      const tokens = (a.tokens ?? 0) > 0 ? ` · ${tok(a.tokens ?? 0)} tok` : ''
+      const count = ` · ${a.tools} tool${a.tools === 1 ? '' : 's'}`
+      const room = W - 2 - 8 - 1 - lead.length - tokens.length - count.length
+      const last = a.lastTool === null || isOver || room < 5 ? '' : fit(` · ${a.lastTool}`, room)
 
       return (
         <Box key={`ro-${a.id}`} flexDirection="column" width={W} marginBottom={1}>
@@ -1433,8 +1439,9 @@ export const register: Register = on => {
           <Text wrap="truncate-end">
             {'  '}
             {gauge(pct, 8, () => (a.status === 'failed' ? 0 : hue), `rb-${a.id}`)}
-            <Text color={isOver ? MUTED : hsl(hue, 0.5, 0.8)}>{` ${stats}`}</Text>
-            {(a.tokens ?? 0) > 0 && <Text color={isOver ? MUTED : HEAT_INK[heat]} bold={heat === 3}>{` · ${tok(a.tokens ?? 0)} tok`}</Text>}
+            <Text color={isOver ? MUTED : hsl(hue, 0.5, 0.8)}>{` ${lead}`}</Text>
+            {tokens !== '' && <Text color={isOver ? MUTED : HEAT_INK[heat]} bold={heat === 3}>{tokens}</Text>}
+            <Text color={isOver ? MUTED : hsl(hue, 0.5, 0.8)}>{`${count}${last}`}</Text>
           </Text>
         </Box>
       )

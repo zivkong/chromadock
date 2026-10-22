@@ -269,6 +269,30 @@ test('each agent shows its tokens, its workflow their sum, and a stale run can b
   await after.unmount()
 })
 
+test('the token count holds its place on the roster line, whatever tool the agent last called', async ($, on) => {
+  let now = 40_000_000
+  on('clock.now', () => ({ value: now }))
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'agent-f' }))
+  on('tool.call', () => ({ result: {} }))
+  on('turn.step', async function* () {
+    return { turnId: 't', index: 0, answer: '', toolUses: [], stopReason: 'tool_use', usage: { input_tokens: 0, output_tokens: 4_000, cache_read_input_tokens: 210_000, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' } }
+  } as never)
+
+  await $.agent.spawn({ prompt: 'p', description: 'browse the docs', subagentType: 'general-purpose', parentModel: 'm' } as never)
+  const stream = $.turn.step({ turnId: 't', index: 0, agentId: 'agent-f', model: 'claude-opus-5-5' } as never)
+  for await (const _ of stream) void _
+  // A long tool name, over an hour in: the line still fits, the tokens whole, the tool name cut.
+  await $.tool.call({ tool: 'mcp__plugin_playwright_playwright__browser_navigate', agentId: 'agent-f', url: 'https://example.com' } as never)
+  now += 3_900_000
+
+  const ui = await $.ui.mount(SIDEBAR as never)
+  const line = await ui.find({ type: 'Text', text: /214k tok/ })
+  expect(line?.text).toContain('214k tok')
+  expect([...(line?.text ?? '')].length).toBeLessThanOrEqual(54)
+  expect(line?.text).toContain('…')
+  await ui.unmount()
+})
+
 test('usage folds to one line, and its toggle opens it', async ($, on) => {
   on('clock.now', () => ({ value: 1_000_000 }))
   on('store.set', () => ({ value: undefined }))
