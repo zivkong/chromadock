@@ -229,7 +229,7 @@ async function refreshSession($: EngineInterface) {
 const money = (usd: number): string =>
   `$${usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-// ── agents & workflows in flight (module state; a reload starts them over) ──
+// ── agents & workflows in flight (module state, published to the session's state so a reload picks them up) ──
 
 const live = new Map<string, AgentRow>()
 const runs = new Map<string, FlowRow>()
@@ -250,6 +250,25 @@ function settle(row: AgentRow, status: 'done' | 'failed', at: number) {
   if (row.runId === null) live.delete(row.id)
 }
 
+// A reload starts the module over but keeps the session's state: take back the agents and
+// runs the last load published, so their tool calls and finishes are followed again. Their
+// robots come back already seated, having walked in long ago.
+async function restore($: EngineInterface) {
+  let isTaken = false
+
+  for (const row of await read($, agents)) {
+    if (live.has(row.id)) continue
+    live.set(row.id, { ...row })
+    isTaken = true
+  }
+  for (const run of await read($, flows)) {
+    if (runs.has(run.runId)) continue
+    runs.set(run.runId, { ...run })
+    isTaken = true
+  }
+  if (isTaken) await reconcile($)
+}
+
 // Settle agents the engine has finished, and close workflows whose agents all have.
 async function reconcile($: EngineInterface) {
   const now = await $.clock.now()
@@ -263,6 +282,11 @@ async function reconcile($: EngineInterface) {
       if (info.status === 'failed' || info.status === 'killed') settle(row, 'failed', now)
       if (info.status === 'completed') settle(row, 'done', now)
     }
+
+    // A loose subagent the engine no longer lists has finished, maybe while this module was
+    // reloading; a workflow's agents are never listed, so only their own events settle them.
+    const listedIds = new Set(listed.map(info => info.id))
+    for (const row of [...live.values()]) if (row.runId === null && !listedIds.has(row.id)) settle(row, 'done', now)
   }
 
   for (const run of runs.values()) {
@@ -728,6 +752,7 @@ export const register: Register = on => {
     if ((await $.store.get(SPEND_OPEN_KEY).catch(() => undefined)) === true) await update($, spendOpen, () => true)
     if ((await $.store.get(USAGE_OPEN_KEY).catch(() => undefined)) === true) await update($, usageOpen, () => true)
     if (await drawsPictures($)) await update($, officeArt, () => true)
+    await restore($).catch(() => undefined)
 
     let ticks = 0
     $.clock.every(TICK_MS, () => {

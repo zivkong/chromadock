@@ -86,6 +86,55 @@ test('a finished workflow agent leaves the room while its run goes on, and a res
   await back.unmount()
 })
 
+test('after a reload the office picks up the agents and workflow already running', async ($, on) => {
+  let now = 2_000_000
+  on('clock.now', () => ({ value: now }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'aurora' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [], startedAt: 900_000 } }))
+  on('session.cwd', () => ({ value: '/' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }))
+  on('store.get', () => ({ value: undefined }))
+  on('clock.every', () => ({ value: undefined }))
+  on('tool.call', () => ({ result: {} }))
+  on('turn.complete', () => ({ text: '' }))
+
+  // What the previous load left in the session's state: one workflow agent at work.
+  const row = {
+    id: 'agent-r', label: 'reconcile the vault ledger', type: 'general-purpose', model: 'claude-sonnet-5-5', runId: 'wf_r',
+    startedAt: now - 60_000, endedAt: null, status: 'running' as const, tools: 3, lastTool: 'Read', lastToolAt: now - 5_000,
+  }
+  // Served once each, as the new load reads them back on start; after that the session's own state answers.
+  const left: Record<string, unknown> = {
+    agents: [row],
+    flows: [{ runId: 'wf_r', name: 'ledger-audit', startedAt: now - 60_000, lastSpawnAt: now - 60_000 }],
+  }
+  on('state.get', ($s, e, next) => {
+    const key = (e as { key: string }).key
+      if (!(key in left)) return next(e)
+    const value = left[key]
+    delete left[key]
+    return { value: { value, version: 1 } }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  // Its robot is back at a desk, and its next tool call is counted.
+  await $.tool.call({ tool: 'Grep', agentId: 'agent-r', pattern: 'x' } as never)
+  const back = await $.ui.mount(SIDEBAR as never)
+  expect((await back.find({ type: 'Text', text: /4 tools · Grep/ }))?.text).toContain('4 tools · Grep')
+  expect((await back.find({ type: 'Text', text: /⌕ Grep/ }))?.text).toContain('⌕ Grep')
+  await back.unmount()
+
+  // And its finish is seen too.
+  await $.turn.complete({ agentId: 'agent-r', reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' } as never)
+  const done = await $.ui.mount(SIDEBAR as never)
+  expect((await done.find({ type: 'Text', text: /Done!/ }))?.text).toContain('✓ Done!')
+  await done.unmount()
+})
+
 test('usage folds to one line, and its toggle opens it', async ($, on) => {
   on('clock.now', () => ({ value: 1_000_000 }))
   on('store.set', () => ({ value: undefined }))
